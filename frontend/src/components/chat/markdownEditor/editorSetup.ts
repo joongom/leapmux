@@ -67,6 +67,14 @@ export interface EditorSetupOptions {
   draftSaveDebounce: { current: TrailingDebounced | undefined }
   /** Getter for the current editor instance (used inside the listener for cursor saving). */
   getEditorInstance: () => Editor | undefined
+  /**
+   * Whether the editor is being rendered on a mobile viewport. Snapshotted at
+   * build time — keyboard hint is set once and the editor lives only while
+   * mounted; mobile/desktop switches remount Chat so no reactivity is needed.
+   * When true, `enterkeyhint` is set to `'enter'` (return/newline key) instead
+   * of `'send'`. See spec composer-mobile-simplify AC8.
+   */
+  isMobile: boolean
 }
 
 /**
@@ -119,9 +127,22 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
       ctx.update(editorViewOptionsCtx, prev => ({
         ...prev,
         attributes: {
-          spellcheck: 'false',
-          autocorrect: 'off',
-          autocapitalize: 'off',
+          // Suppress iOS / Android keyboard helpers and password-manager
+          // AutoFill chips (🔑 password, 💳 card, 📍 location). Contenteditable
+          // is not a form input, but iOS Safari still picks it up unless we
+          // disable every heuristic explicitly and signal to password
+          // managers that this surface is not a credential field. See spec
+          // ios-keyboard-fix AC1.
+          'spellcheck': 'false',
+          'autocorrect': 'off',
+          'autocapitalize': 'off',
+          'autocomplete': 'off',
+          'inputmode': 'text',
+          'enterkeyhint': opts.isMobile ? 'enter' : 'send',
+          'data-1p-ignore': 'true', // 1Password
+          'data-lpignore': 'true', // LastPass
+          'data-form-type': 'other', // Bitwarden / generic
+          'data-bwignore': 'true', // Bitwarden alt
         },
       }))
       let pendingMd = ''

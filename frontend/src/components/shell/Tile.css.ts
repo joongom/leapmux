@@ -30,6 +30,12 @@ export const tileContent = style({
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
+  // Column flex children must declare `min-height: 0` or they refuse to
+  // shrink below their intrinsic content height. On mobile, when the
+  // visual viewport shrinks (keyboard appears), the absent floor lets
+  // tileContent overflow `mobileCenter` and pushes the composer off
+  // screen. See chat-composer-mobile spec T5.
+  minHeight: 0,
   overflow: 'hidden',
   // Positioning context for `tilePane` (in AppShell.css). Tile content
   // panes (agent / terminal / file) absolutely fill this container so

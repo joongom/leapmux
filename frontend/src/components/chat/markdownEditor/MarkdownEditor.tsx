@@ -6,10 +6,11 @@ import type { TrailingDebounced } from '~/lib/debounce'
 import type { ActiveFormatting } from '~/lib/editor/toolbarState'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
-import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
+import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
+import { useIsMobile } from '~/hooks/useIsMobile'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { INITIAL_ACTIVE_FORMATTING } from '~/lib/editor/toolbarState'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
@@ -81,6 +82,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorInstance: Editor | undefined
   const preferences = usePreferences()
   const enterMode = preferences.enterKeyMode
+  const isMobile = useIsMobile()
   const [_markdown, setMarkdown] = createSignal('')
   const [contentHeight, setContentHeight] = createSignal(0)
 
@@ -188,10 +190,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     focusEditor()
   }
 
-  // Enter key mode reference for ProseMirror plugin (closures capture signal)
+  // Enter key mode reference for ProseMirror plugin (closures capture signal).
+  // On mobile, force `'cmd-enter-sends'` so plain Enter always inserts a
+  // newline; Cmd+Enter is unavailable on mobile keyboards, so the Send button
+  // becomes the sole send path. Desktop preference is unaffected.
   let enterModeRef: EnterKeyMode = 'cmd-enter-sends'
   createEffect(() => {
-    enterModeRef = enterMode()
+    enterModeRef = isMobile() ? 'cmd-enter-sends' : enterMode()
   })
   let disabledRef = false
   let placeholderRef = 'Send a message...'
@@ -266,6 +271,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     const editor = await buildEditor({
       editorRoot: editorRef,
       initialContent: initialDraft.content,
+      isMobile: isMobile(),
       pluginRefs: {
         getDisabled: () => disabledRef,
         getEnterMode: () => enterModeRef,
@@ -497,27 +503,29 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   return (
     <div class={styles.container}>
-      <EditorToolbar
-        refs={{ editorInstance: () => editorInstance, focusEditor }}
-        activeFormatting={activeFormatting}
-        link={{
-          linkPopoverOpen,
-          setLinkPopoverOpen,
-          linkUrl,
-          setLinkUrl,
-          handleLinkSubmit,
-          handleLinkRemove,
-        }}
-        enterMode={{
-          mode: enterMode,
-          toggle: toggleEnterMode,
-          tooltipOpen: enterTooltipOpen,
-          setTooltipOpen: setEnterTooltipOpen,
-        }}
-        handleCodeBlockClick={handleCodeBlockClick}
-        handleInlineCodeClick={handleInlineCodeClick}
-        onUploadClick={props.attachments?.onUpload}
-      />
+      <Show when={!isMobile()}>
+        <EditorToolbar
+          refs={{ editorInstance: () => editorInstance, focusEditor }}
+          activeFormatting={activeFormatting}
+          link={{
+            linkPopoverOpen,
+            setLinkPopoverOpen,
+            linkUrl,
+            setLinkUrl,
+            handleLinkSubmit,
+            handleLinkRemove,
+          }}
+          enterMode={{
+            mode: enterMode,
+            toggle: toggleEnterMode,
+            tooltipOpen: enterTooltipOpen,
+            setTooltipOpen: setEnterTooltipOpen,
+          }}
+          handleCodeBlockClick={handleCodeBlockClick}
+          handleInlineCodeClick={handleInlineCodeClick}
+          onUploadClick={props.attachments?.onUpload}
+        />
+      </Show>
       {props.banner}
       <div
         class={styles.editorWrapper}

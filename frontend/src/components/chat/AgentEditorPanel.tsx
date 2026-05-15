@@ -6,7 +6,11 @@ import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
+import ArrowUp from 'lucide-solid/icons/arrow-up'
+import Info from 'lucide-solid/icons/info'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import Paperclip from 'lucide-solid/icons/paperclip'
+import Plus from 'lucide-solid/icons/plus'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
@@ -16,6 +20,7 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { useIsMobile } from '~/hooks/useIsMobile'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
@@ -62,6 +67,14 @@ export interface AgentEditorPanelProps {
   addDropDataTransferRef?: (fn: (dataTransfer: DataTransfer) => Promise<number>) => void
   /** Ref to expose the triggerSend function for external callers. */
   triggerSendRef?: (fn: () => void) => void
+  /**
+   * Fires when focus enters the editor surface (ProseMirror DOM, attachment
+   * button, settings trigger, etc — any focusable inside the panel). The
+   * host uses this to keep the latest message visible when the iOS
+   * virtual keyboard appears. Mobile-only consumer; safe to omit on
+   * desktop.
+   */
+  onEditorFocus?: () => void
 }
 
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
@@ -202,6 +215,62 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   let triggerSend: (() => void) | undefined
+  const isMobile = useIsMobile()
+
+  // Mobile single-row composer: render `[+][editor][Send]` instead of the
+  // desktop footer bar. Control-request flows keep desktop layout (AC9).
+  const useMobileComposer = () => isMobile() && !ctrl.activeControlRequest()
+
+  // Send button enabled-state, shared by desktop footer and mobile row.
+  const sendDisabled = () => (!hasContent() && attachments().length === 0) || (props.disabled ?? false) || sending()
+
+  const handleSendClick = () => {
+    startSending()
+    triggerSend?.()
+  }
+
+  const handleInterruptClick = () => {
+    interruptLoading.start()
+    props.onInterrupt?.()
+  }
+
+  // Reusable agent-info DropdownMenu block (desktop footer + mobile `+` menu).
+  const renderAgentInfoTrigger = () => (
+    <Show when={info.showInfoTrigger()}>
+      <DropdownMenu
+        as="div"
+        trigger={triggerProps => (
+          <button
+            class={styles.infoTrigger}
+            data-testid="agent-info-trigger"
+            {...triggerProps}
+          >
+            <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
+            <Show when={info.urgentRateLimit()}>
+              {rl => (
+                <Tooltip
+                  text={(() => {
+                    const resetsAt = getResetsAt(rl().info)
+                    return resetsAt ? formatResetTimestamp(resetsAt) : undefined
+                  })()}
+                >
+                  <span class={styles.rateLimitCountdown}>
+                    {rl().countdown}
+                  </span>
+                </Tooltip>
+              )}
+            </Show>
+          </button>
+        )}
+        class="card"
+        data-testid="agent-info-popover"
+      >
+        <div class={styles.infoRows}>
+          {info.infoHoverCardContent()}
+        </div>
+      </DropdownMenu>
+    </Show>
+  )
 
   return (
     <div
@@ -209,6 +278,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       class={styles.editorPanelWrapper}
       data-testid="agent-editor-panel"
       data-chat-panel
+      // `focusin` bubbles from any descendant (ProseMirror contenteditable,
+      // attachment <input>, settings <button>, etc.). The host wires this
+      // to scroll the message list to bottom on iOS so the keyboard does
+      // not obscure the latest message — but only when the user was
+      // already at the bottom (see TileRenderer wiring).
+      on:focusin={() => props.onEditorFocus?.()}
     >
       <div
         class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
@@ -229,223 +304,317 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           onChange={handleFileInputChange}
           data-testid="file-input"
         />
-        <MarkdownEditor
-          draftKey={{
-            agentId: props.agentId,
-            key: activeDraftKey(),
-            controlRequestId: ctrl.activeControlRequest()?.requestId,
-          }}
-          onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
-          disabled={props.disabled}
-          onTogglePlanMode={ctrl.togglePlanMode}
-          requestedHeight={editorMinHeightSignal()}
-          maxHeight={editorHeight.maxEditorHeight()}
-          onContentHeightChange={setEditorContentHeight}
-          onContentChange={(has) => {
-            setHasContent(has)
-            // When the editor becomes empty and the manual height override
-            // is at (or below) the minimum, clear it so the editor snaps
-            // back to its natural single-line size.
-            if (!has) {
-              const h = editorMinHeightSignal()
-              if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
-                editorHeight.resetEditorHeight()
-            }
-            if (has && ctrl.isAskUserQuestion()) {
-              const page = askCurrentPage()
-              setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
-            }
-          }}
-          imperative={{
-            sendRef: (fn) => {
-              triggerSend = fn
-              props.triggerSendRef?.(fn)
-              if (panelRef)
-                registerPanelSend(panelRef, fn)
-            },
-            focusRef: (fn) => {
-              editorFocusFn = fn
-              props.focusRef?.(fn)
-            },
-            contentRef: (get, set) => {
-              editorContentRef = { get, set }
-            },
-            insertRef: (fn) => {
-              editorInsertFn = fn
-            },
-            onReady: () => {
-              editorReady = true
-              tryRegisterEditorRef(props.agentId)
-            },
-          }}
-          attachments={!ctrl.activeControlRequest()
-            ? {
-                onPaste: handlePasteFiles,
-                onDrop: handleDropDataTransfer,
-                onUpload: () => fileInputRef?.click(),
-              }
-            : undefined}
-          placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
-          allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
-          banner={
-            ctrl.activeControlRequest()
-              ? (
-                  <ControlRequestContent
-                    request={ctrl.activeControlRequest()!}
-                    askState={askState}
-                    optionsDisabled={hasContent()}
-                    agentProvider={props.agent?.agentProvider}
-                  />
-                )
-              : undefined
-          }
-          footer={
-            ctrl.activeControlRequest()
-              ? (
-                  <ControlRequestActions
-                    request={ctrl.activeControlRequest()!}
-                    askState={askState}
-                    agentProvider={props.agent?.agentProvider}
-                    onRespond={(agentId, content) => {
-                      const reqId = ctrl.activeControlRequest()?.requestId
-                      if (reqId)
-                        ctrl.cleanupControlRequestDrafts(reqId)
-                      editorHeight.resetEditorHeight()
-                      return props.onControlResponse?.(agentId, content) ?? Promise.resolve()
-                    }}
-                    hasEditorContent={hasContent()}
-                    onTriggerSend={() => triggerSend?.()}
-                    editorContentRef={editorContentRef}
-                    bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
-                    onPermissionModeChange={props.onPermissionModeChange}
-                    contextUsage={props.agentSessionInfo?.contextUsage}
-                    modelContextWindow={modelContextWindow()}
-                    infoTrigger={
-                      info.showInfoTrigger()
-                        ? (
-                            <DropdownMenu
-                              as="div"
-                              trigger={triggerProps => (
-                                <button
-                                  class={styles.infoTrigger}
-                                  data-testid="agent-info-trigger"
-                                  {...triggerProps}
-                                >
-                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
-                                  <Show when={info.urgentRateLimit()}>
-                                    {rl => (
-                                      <Tooltip
-                                        text={(() => {
-                                          const resetsAt = getResetsAt(rl().info)
-                                          return resetsAt ? formatResetTimestamp(resetsAt) : undefined
-                                        })()}
-                                      >
-                                        <span class={styles.rateLimitCountdown}>
-                                          {rl().countdown}
-                                        </span>
-                                      </Tooltip>
-                                    )}
-                                  </Show>
-                                </button>
-                              )}
-                              class="card"
-                              data-testid="agent-info-popover"
-                            >
-                              <div class={styles.infoRows}>
-                                {info.infoHoverCardContent()}
-                              </div>
-                            </DropdownMenu>
-                          )
-                        : undefined
-                    }
-                  />
-                )
-              : (
-                  <div class={styles.footerBar}>
-                    <div class={styles.footerBarLeft}>
-                      <EditorSettingsDropdown
-                        disabled={props.disabled}
-                        settingsLoading={props.settingsLoading}
-                        model={props.agent?.model}
-                        effort={props.agent?.effort}
-                        permissionMode={props.agent?.permissionMode}
-                        extraSettings={props.agent?.extraSettings}
-                        availableModels={props.agent?.availableModels}
-                        availableOptionGroups={props.agent?.availableOptionGroups}
+        <Show
+          when={useMobileComposer()}
+          fallback={(
+            <MarkdownEditor
+              draftKey={{
+                agentId: props.agentId,
+                key: activeDraftKey(),
+                controlRequestId: ctrl.activeControlRequest()?.requestId,
+              }}
+              onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
+              disabled={props.disabled}
+              onTogglePlanMode={ctrl.togglePlanMode}
+              requestedHeight={editorMinHeightSignal()}
+              maxHeight={editorHeight.maxEditorHeight()}
+              onContentHeightChange={setEditorContentHeight}
+              onContentChange={(has) => {
+                setHasContent(has)
+                if (!has) {
+                  const h = editorMinHeightSignal()
+                  if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
+                    editorHeight.resetEditorHeight()
+                }
+                if (has && ctrl.isAskUserQuestion()) {
+                  const page = askCurrentPage()
+                  setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
+                }
+              }}
+              imperative={{
+                sendRef: (fn) => {
+                  triggerSend = fn
+                  props.triggerSendRef?.(fn)
+                  if (panelRef)
+                    registerPanelSend(panelRef, fn)
+                },
+                focusRef: (fn) => {
+                  editorFocusFn = fn
+                  props.focusRef?.(fn)
+                },
+                contentRef: (get, set) => {
+                  editorContentRef = { get, set }
+                },
+                insertRef: (fn) => {
+                  editorInsertFn = fn
+                },
+                onReady: () => {
+                  editorReady = true
+                  tryRegisterEditorRef(props.agentId)
+                },
+              }}
+              attachments={!ctrl.activeControlRequest()
+                ? {
+                    onPaste: handlePasteFiles,
+                    onDrop: handleDropDataTransfer,
+                    onUpload: () => fileInputRef?.click(),
+                  }
+                : undefined}
+              placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
+              allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
+              banner={
+                ctrl.activeControlRequest()
+                  ? (
+                      <ControlRequestContent
+                        request={ctrl.activeControlRequest()!}
+                        askState={askState}
+                        optionsDisabled={hasContent()}
                         agentProvider={props.agent?.agentProvider}
-                        onChange={props.onSettingChange}
                       />
-                      <Show when={info.showInfoTrigger()}>
-                        <DropdownMenu
-                          as="div"
-                          trigger={triggerProps => (
-                            <button
-                              class={styles.infoTrigger}
-                              data-testid="agent-info-trigger"
-                              {...triggerProps}
-                            >
-                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
-                              <Show when={info.urgentRateLimit()}>
-                                {rl => (
-                                  <Tooltip
-                                    text={(() => {
-                                      const resetsAt = getResetsAt(rl().info)
-                                      return resetsAt ? formatResetTimestamp(resetsAt) : undefined
-                                    })()}
-                                  >
-                                    <span class={styles.rateLimitCountdown}>
-                                      {rl().countdown}
-                                    </span>
-                                  </Tooltip>
-                                )}
-                              </Show>
-                            </button>
-                          )}
-                          class="card"
-                          data-testid="agent-info-popover"
-                        >
-                          <div class={styles.infoRows}>
-                            {info.infoHoverCardContent()}
-                          </div>
-                        </DropdownMenu>
-                      </Show>
-                    </div>
-                    <div class={styles.footerBarRight}>
-                      <Show when={ctrl.showInterrupt()}>
-                        <button
-                          class="outline"
-                          onClick={() => {
-                            interruptLoading.start()
-                            props.onInterrupt?.()
-                          }}
-                          disabled={interruptLoading.loading()}
-                          data-testid="interrupt-button"
-                        >
-                          <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
-                            <Icon icon={LoaderCircle} size="sm" class={spinner} />
-                          </Show>
-                          {interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}
-                        </button>
-                      </Show>
-                      <button
-                        type="button"
-                        disabled={(!hasContent() && attachments().length === 0) || props.disabled || sending()}
-                        onClick={() => {
-                          startSending()
-                          triggerSend?.()
+                    )
+                  : undefined
+              }
+              footer={
+                ctrl.activeControlRequest()
+                  ? (
+                      <ControlRequestActions
+                        request={ctrl.activeControlRequest()!}
+                        askState={askState}
+                        agentProvider={props.agent?.agentProvider}
+                        onRespond={(agentId, content) => {
+                          const reqId = ctrl.activeControlRequest()?.requestId
+                          if (reqId)
+                            ctrl.cleanupControlRequestDrafts(reqId)
+                          editorHeight.resetEditorHeight()
+                          return props.onControlResponse?.(agentId, content) ?? Promise.resolve()
                         }}
-                        data-testid="send-button"
-                      >
-                        <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
-                          <Icon icon={LoaderCircle} size="sm" class={spinner} />
-                        </Show>
-                        Send
-                      </button>
-                    </div>
+                        hasEditorContent={hasContent()}
+                        onTriggerSend={() => triggerSend?.()}
+                        editorContentRef={editorContentRef}
+                        bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
+                        onPermissionModeChange={props.onPermissionModeChange}
+                        contextUsage={props.agentSessionInfo?.contextUsage}
+                        modelContextWindow={modelContextWindow()}
+                        infoTrigger={renderAgentInfoTrigger()}
+                      />
+                    )
+                  : (
+                      <div class={styles.footerBar}>
+                        <div class={styles.footerBarLeft}>
+                          <EditorSettingsDropdown
+                            disabled={props.disabled}
+                            settingsLoading={props.settingsLoading}
+                            model={props.agent?.model}
+                            effort={props.agent?.effort}
+                            permissionMode={props.agent?.permissionMode}
+                            extraSettings={props.agent?.extraSettings}
+                            availableModels={props.agent?.availableModels}
+                            availableOptionGroups={props.agent?.availableOptionGroups}
+                            agentProvider={props.agent?.agentProvider}
+                            onChange={props.onSettingChange}
+                          />
+                          {renderAgentInfoTrigger()}
+                        </div>
+                        <div class={styles.footerBarRight}>
+                          <Show when={ctrl.showInterrupt()}>
+                            <button
+                              class="outline"
+                              onClick={handleInterruptClick}
+                              disabled={interruptLoading.loading()}
+                              data-testid="interrupt-button"
+                            >
+                              <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
+                                <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                              </Show>
+                              {interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}
+                            </button>
+                          </Show>
+                          <button
+                            type="button"
+                            disabled={sendDisabled()}
+                            onClick={handleSendClick}
+                            data-testid="send-button"
+                          >
+                            <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
+                              <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                            </Show>
+                            Send
+                          </button>
+                        </div>
+                      </div>
+                    )
+              }
+            />
+          )}
+        >
+          <div class={styles.mobileComposerRow}>
+            <DropdownMenu
+              placement={{ placement: 'above' }}
+              trigger={triggerProps => (
+                <button
+                  type="button"
+                  class={styles.mobilePlusButton}
+                  data-testid="mobile-plus-button"
+                  aria-label="More actions"
+                  aria-haspopup="menu"
+                  disabled={props.disabled}
+                  {...triggerProps}
+                >
+                  <Icon icon={Plus} size="sm" />
+                </button>
+              )}
+              class="card"
+              data-testid="mobile-plus-menu"
+            >
+              <div class={styles.mobilePlusMenu}>
+                <button
+                  type="button"
+                  class={styles.mobilePlusMenuItem}
+                  role="menuitem"
+                  data-testid="mobile-attach-file"
+                  onClick={() => fileInputRef?.click()}
+                >
+                  <Icon icon={Paperclip} size="sm" />
+                  <span>파일 첨부</span>
+                </button>
+                <hr class={styles.mobilePlusMenuSeparator} />
+                <div
+                  class={styles.mobilePlusMenuSlot}
+                  role="menuitem"
+                  // Children render their own DropdownMenu triggers; clicks
+                  // inside the slot should not light-dismiss the outer menu
+                  // before the nested popover has a chance to open.
+                  onPointerDown={e => e.stopPropagation()}
+                  onClick={e => e.stopPropagation()}
+                >
+                  <EditorSettingsDropdown
+                    disabled={props.disabled}
+                    settingsLoading={props.settingsLoading}
+                    model={props.agent?.model}
+                    effort={props.agent?.effort}
+                    permissionMode={props.agent?.permissionMode}
+                    extraSettings={props.agent?.extraSettings}
+                    availableModels={props.agent?.availableModels}
+                    availableOptionGroups={props.agent?.availableOptionGroups}
+                    agentProvider={props.agent?.agentProvider}
+                    onChange={props.onSettingChange}
+                  />
+                </div>
+                <Show when={info.showInfoTrigger()}>
+                  <div
+                    class={styles.mobilePlusMenuSlot}
+                    role="menuitem"
+                    data-testid="mobile-agent-info"
+                    onPointerDown={e => e.stopPropagation()}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    <DropdownMenu
+                      as="div"
+                      trigger={triggerProps => (
+                        <button
+                          type="button"
+                          class={styles.mobilePlusMenuItem}
+                          {...triggerProps}
+                        >
+                          <Icon icon={Info} size="sm" />
+                          <span>에이전트 정보</span>
+                        </button>
+                      )}
+                      class="card"
+                      data-testid="agent-info-popover"
+                    >
+                      <div class={styles.infoRows}>
+                        {info.infoHoverCardContent()}
+                      </div>
+                    </DropdownMenu>
                   </div>
-                )
-          }
-        />
+                </Show>
+                <Show when={ctrl.showInterrupt()}>
+                  <button
+                    type="button"
+                    class={`${styles.mobilePlusMenuItem} ${styles.mobilePlusMenuItemDestructive}`}
+                    role="menuitem"
+                    data-testid="interrupt-button"
+                    disabled={interruptLoading.loading()}
+                    onClick={handleInterruptClick}
+                  >
+                    <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
+                      <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                    </Show>
+                    <span>{interruptLoading.loading() ? 'Interrupting...' : '중단'}</span>
+                  </button>
+                </Show>
+              </div>
+            </DropdownMenu>
+            <div class={styles.mobileEditorSlot}>
+              <MarkdownEditor
+                draftKey={{
+                  agentId: props.agentId,
+                  key: activeDraftKey(),
+                  controlRequestId: ctrl.activeControlRequest()?.requestId,
+                }}
+                onSend={ctrl.handleSend}
+                disabled={props.disabled}
+                onTogglePlanMode={ctrl.togglePlanMode}
+                requestedHeight={editorMinHeightSignal()}
+                maxHeight={editorHeight.maxEditorHeight()}
+                onContentHeightChange={setEditorContentHeight}
+                onContentChange={(has) => {
+                  setHasContent(has)
+                  if (!has) {
+                    const h = editorMinHeightSignal()
+                    if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
+                      editorHeight.resetEditorHeight()
+                  }
+                  if (has && ctrl.isAskUserQuestion()) {
+                    const page = askCurrentPage()
+                    setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
+                  }
+                }}
+                imperative={{
+                  sendRef: (fn) => {
+                    triggerSend = fn
+                    props.triggerSendRef?.(fn)
+                    if (panelRef)
+                      registerPanelSend(panelRef, fn)
+                  },
+                  focusRef: (fn) => {
+                    editorFocusFn = fn
+                    props.focusRef?.(fn)
+                  },
+                  contentRef: (get, set) => {
+                    editorContentRef = { get, set }
+                  },
+                  insertRef: (fn) => {
+                    editorInsertFn = fn
+                  },
+                  onReady: () => {
+                    editorReady = true
+                    tryRegisterEditorRef(props.agentId)
+                  },
+                }}
+                attachments={{
+                  onPaste: handlePasteFiles,
+                  onDrop: handleDropDataTransfer,
+                  onUpload: () => fileInputRef?.click(),
+                }}
+                allowEmptySend={attachments().length > 0}
+              />
+            </div>
+            <button
+              type="button"
+              class={styles.mobileSendButton}
+              disabled={sendDisabled()}
+              onClick={handleSendClick}
+              data-testid="send-button"
+              aria-label="Send message"
+            >
+              <Show when={sending()} fallback={<Icon icon={ArrowUp} size="sm" />}>
+                <Icon icon={LoaderCircle} size="sm" class={spinner} />
+              </Show>
+            </button>
+          </div>
+        </Show>
       </div>
     </div>
   )

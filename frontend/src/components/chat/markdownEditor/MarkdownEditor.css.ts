@@ -14,17 +14,27 @@ export const headingPickerButton = style({
 })
 
 export const container = style({
-  position: 'relative',
-  display: 'flex',
-  flexDirection: 'column',
-  width: '100%',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  backgroundColor: 'var(--background)',
-  overflow: 'hidden',
-  selectors: {
+  'position': 'relative',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'width': '100%',
+  'border': '1px solid var(--border)',
+  'borderRadius': 'var(--radius-medium)',
+  'backgroundColor': 'var(--background)',
+  'overflow': 'hidden',
+  'selectors': {
     '&:focus-within': {
       borderColor: 'var(--ring)',
+    },
+  },
+  '@media': {
+    // Mobile: the outer `mobileEditorSlot` pill already provides the visible
+    // chrome (border, radius, surface). Drop the container's own ring so we
+    // don't render a double border / hard focus outline inside the pill.
+    '(max-width: 639px)': {
+      border: 'none',
+      borderRadius: 0,
+      backgroundColor: 'transparent',
     },
   },
 })
@@ -187,6 +197,22 @@ globalStyle(`${editorWrapper} .ProseMirror`, {
   minHeight: '20px',
   whiteSpace: 'pre-wrap',
   wordWrap: 'break-word',
+})
+
+// Mobile composer tweaks: tighter line-height so short messages don't get the
+// 1.75 chat-prose leading, and 16px font-size to prevent iOS zoom-on-focus.
+// Padding is reduced because the outer `mobileEditorSlot` pill already
+// provides 8px / 14px chrome via its border + radius — the contenteditable
+// just needs enough inner space for caret comfort.
+globalStyle(`${editorWrapper} .ProseMirror`, {
+  '@media': {
+    '(max-width: 639px)': {
+      padding: '8px 14px',
+      lineHeight: 1.3,
+      fontSize: '16px',
+      minHeight: '20px',
+    },
+  },
 })
 
 // Code blocks: move scroll to <code> so the language label stays fixed.

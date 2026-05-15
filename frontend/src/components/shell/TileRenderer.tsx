@@ -148,7 +148,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const onDetachTab = opts.floatingWindow?.onDetachTab
   const onAttachTab = opts.floatingWindow?.onAttachTab
 
-  const chatHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void }>()
+  const chatHandlers = new Map<string, {
+    pageScroll: (direction: -1 | 1) => void
+    isAtBottomFresh: () => boolean
+    forceScrollToBottom: () => void
+  }>()
   const terminalHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void, write: (data: string) => void }>()
 
   const getActiveTabForTile = (tileId: string): Tab | null =>
@@ -625,7 +629,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     onScrollApiReady={(api) => {
                       agentScrollStates.set(agentId, api.getScrollState)
                       agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
-                      chatHandlers.set(agentId, { pageScroll: api.pageScroll })
+                      chatHandlers.set(agentId, {
+                        pageScroll: api.pageScroll,
+                        isAtBottomFresh: api.isAtBottomFresh,
+                        forceScrollToBottom: api.forceScrollToBottom,
+                      })
                       if (agentTab()?.id === at.id) {
                         getScrollStateRef.set(api.getScrollState)
                         forceScrollToBottomRef.set(api.forceScrollToBottom)
@@ -857,6 +865,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
+        onEditorFocus={() => {
+          // iOS keyboard reveal: if the user was already reading the
+          // latest message, re-stick to the bottom so the keyboard
+          // doesn't obscure it. If they were scrolled up reading
+          // history, leave their position alone — yanking the view
+          // down would be hostile.
+          const handler = chatHandlers.get(agentId())
+          if (handler && handler.isAtBottomFresh())
+            handler.forceScrollToBottom()
+        }}
         disabled={false}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
         controlRequests={controlStore.getRequests(agentId())}
