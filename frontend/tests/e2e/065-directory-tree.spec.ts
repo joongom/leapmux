@@ -47,11 +47,8 @@ test.describe('DirectoryTree', () => {
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
 
-      // Hover the root node and open context menu
-      await rootNode.hover()
-      const contextButton = rootNode.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      // Right-click the root row to open the context menu
+      await rootNode.click({ button: 'right' })
 
       // All 4 menu items should be visible for a directory (use :visible to scope to the open popover)
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
@@ -76,13 +73,10 @@ test.describe('DirectoryTree', () => {
       // Wait for the file tree to load
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // Hover on package.json file and open context menu
+      // Right-click on package.json row to open the context menu
       const fileNode = page.getByText('package.json')
-      await fileNode.hover()
       const treeRow = fileNode.locator('..')
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      await treeRow.click({ button: 'right' })
 
       // 3 items: mention, copy path, copy relative path — but NOT terminal
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
@@ -108,11 +102,8 @@ test.describe('DirectoryTree', () => {
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
 
-      // Hover and open context menu on the root directory
-      await rootNode.hover()
-      const contextButton = rootNode.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      // Right-click the root row to open the context menu
+      await rootNode.click({ button: 'right' })
 
       // Click "Open a terminal tab here"
       const terminalButton = page.locator('[data-testid="tree-open-terminal-button"]:visible')
@@ -141,13 +132,10 @@ test.describe('DirectoryTree', () => {
       // Wait for file tree
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // Open context menu on package.json
+      // Right-click on package.json row to open the context menu
       const fileNode = page.getByText('package.json')
-      await fileNode.hover()
       const treeRow = fileNode.locator('..')
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      await treeRow.click({ button: 'right' })
 
       // Click "Copy path" from the visible dropdown
       const copyPathButton = page.locator('[data-testid="tree-copy-path-button"]:visible')

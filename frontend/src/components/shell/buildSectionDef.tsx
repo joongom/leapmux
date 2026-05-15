@@ -188,6 +188,8 @@ export function buildSectionDef(
           onToggleFlatList={() => ctx.filesSectionHandle()?.toggleFlatListMode()}
           showHiddenFiles={() => ctx.filesSectionHandle()?.showHiddenFiles() ?? true}
           onToggleShowHidden={() => ctx.filesSectionHandle()?.toggleShowHiddenFiles()}
+          nameWrap={() => ctx.filesSectionHandle()?.nameWrap() ?? false}
+          onToggleNameWrap={() => ctx.filesSectionHandle()?.toggleNameWrap()}
         />
       ),
       content: () => (

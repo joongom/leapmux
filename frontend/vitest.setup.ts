@@ -40,6 +40,24 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   } as unknown as typeof ResizeObserver
 }
 
+// jsdom does not implement window.matchMedia. Provide an inert stub that
+// reports `matches: false` so components that key off mobile breakpoints
+// (e.g. useIsMobile) render without throwing. Tests that need to force
+// mobile viewport can still override this per-suite (see
+// `DirectoryTree.actionBar.test.tsx`).
+if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
+  window.matchMedia = ((query: string): MediaQueryList => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  } as unknown as MediaQueryList)) as typeof window.matchMedia
+}
+
 // Run requestAnimationFrame synchronously in tests. Production code uses
 // rAF to coalesce per-frame work (e.g. resize-drag pointermove), but
 // tests assert on the synchronous result of dispatched events. The

@@ -140,15 +140,10 @@ test.describe('Quote and Mention', () => {
       // Wait for the file tree to load — package.json should be visible
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // Find the tree node row containing package.json and hover it
+      // Right-click on the package.json row to open the context menu
       const packageJsonNode = page.getByText('package.json')
-      await packageJsonNode.hover()
-
-      // Click the context menu button (three dots) that appears on hover
       const treeRow = packageJsonNode.locator('..')
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      await treeRow.click({ button: 'right' })
 
       // Click "Mention in chat" from the visible dropdown
       const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
@@ -277,13 +272,10 @@ test.describe('Quote and Mention', () => {
       // Wait for the file tree to load — package.json should be visible
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // First mention: hover, open context menu, and click mention for package.json
+      // First mention: right-click the package.json row to open its context menu
       const packageJsonNode = page.getByText('package.json')
-      await packageJsonNode.hover()
       const treeRow1 = packageJsonNode.locator('..')
-      const contextButton1 = treeRow1.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton1).toBeVisible()
-      await contextButton1.click()
+      await treeRow1.click({ button: 'right' })
       const mentionButton1 = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton1).toBeVisible()
       await mentionButton1.click()
@@ -292,13 +284,10 @@ test.describe('Quote and Mention', () => {
       // Wait for the first context menu to fully close before interacting with the next node
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toHaveCount(0)
 
-      // Second mention: hover, open context menu, and click mention for tsconfig.json
+      // Second mention: right-click the tsconfig.json row to open its context menu
       const tsconfigNode = page.getByText('tsconfig.json')
-      await tsconfigNode.hover()
       const treeRow2 = tsconfigNode.locator('..')
-      const contextButton2 = treeRow2.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton2).toBeVisible()
-      await contextButton2.click()
+      await treeRow2.click({ button: 'right' })
       const mentionButton2 = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton2).toBeVisible()
       await mentionButton2.click()

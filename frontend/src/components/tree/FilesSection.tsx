@@ -3,6 +3,7 @@ import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
+import AlignJustify from 'lucide-solid/icons/align-justify'
 import ChevronsDownUp from 'lucide-solid/icons/chevrons-down-up'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
@@ -10,11 +11,12 @@ import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
+import WrapText from 'lucide-solid/icons/wrap-text'
 import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
-import { PREFIX_FILES_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { PREFIX_FILES_NAME_WRAP, PREFIX_FILES_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
 import { join, sep, trimLastSegment } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats } from '~/stores/gitFileStatus.store'
@@ -30,6 +32,8 @@ export interface FilesSectionHandle {
   toggleFlatListMode: () => void
   showHiddenFiles: () => boolean
   toggleShowHiddenFiles: () => void
+  nameWrap: () => boolean
+  toggleNameWrap: () => void
 }
 
 export interface FilesSectionProps {
@@ -69,6 +73,8 @@ export interface FilesSectionHeaderActionsProps {
   onToggleFlatList?: () => void
   showHiddenFiles?: () => boolean
   onToggleShowHidden?: () => void
+  nameWrap?: () => boolean
+  onToggleNameWrap?: () => void
 }
 
 const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
@@ -104,6 +110,18 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
           data-testid="files-locate-file"
         />
       </Show>
+      <Show when={props.onToggleNameWrap}>
+        <IconButton
+          icon={props.nameWrap?.() ? AlignJustify : WrapText}
+          iconSize="sm"
+          size="sm"
+          title={props.nameWrap?.() ? 'Truncate long names' : 'Wrap long names'}
+          state={props.nameWrap?.() ? IconButtonState.Active : IconButtonState.Enabled}
+          onClick={() => props.onToggleNameWrap?.()}
+          data-testid="files-name-wrap-toggle"
+          aria-pressed={props.nameWrap?.() ? 'true' : 'false'}
+        />
+      </Show>
       <IconButton
         icon={ChevronsDownUp}
         iconSize="sm"
@@ -135,6 +153,12 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [flatListMode, setFlatListMode] = createSignal(false)
   const showHiddenStorageKey = () => `${PREFIX_FILES_SHOW_HIDDEN}${props.workerId}:${props.workingDir}`
   const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(showHiddenStorageKey()) ?? true)
+  const nameWrapStorageKey = () => `${PREFIX_FILES_NAME_WRAP}${props.workerId}:${props.workingDir}`
+  // Default to wrap-on: long filenames spill out of the narrow mobile tree
+  // pane and the truncate-mode ellipsis hides the part of the name the user
+  // most wants to read (the extension / trailing suffix). The header toggle
+  // still flips back to truncate when desired.
+  const [wrapName, setWrapName] = createSignal(safeGetJson<boolean>(nameWrapStorageKey()) ?? true)
   let treeHandle: DirectoryTreeHandle | undefined
 
   // Re-read from localStorage when the storage key changes (workerId/workingDir changed).
@@ -145,6 +169,16 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   // Persist showHiddenFiles when it changes (skip initial mount).
   createEffect(on(showHiddenFiles, (value) => {
     safeSetJson(showHiddenStorageKey(), value)
+  }, { defer: true }))
+
+  // Re-read name-wrap when the storage key changes.
+  createEffect(on(nameWrapStorageKey, (key) => {
+    setWrapName(safeGetJson<boolean>(key) ?? true)
+  }, { defer: true }))
+
+  // Persist name-wrap when toggled (skip initial mount).
+  createEffect(on(wrapName, (value) => {
+    safeSetJson(nameWrapStorageKey(), value)
   }, { defer: true }))
 
   const isFiltered = () => activeFilter() !== 'all'
@@ -159,6 +193,8 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
       toggleFlatListMode: () => setFlatListMode(prev => !prev),
       showHiddenFiles,
       toggleShowHiddenFiles: () => setShowHiddenFiles(prev => !prev),
+      nameWrap: wrapName,
+      toggleNameWrap: () => setWrapName(prev => !prev),
     })
   })
 
@@ -228,12 +264,15 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
               onMention={props.onMention}
               onOpenTerminal={props.onOpenTerminal}
+              onRefresh={() => treeHandle?.refresh()}
+              onToggleShowHidden={() => setShowHiddenFiles(prev => !prev)}
               rootPath={props.workingDir || '~'}
               homeDir={props.homeDir}
               flavor={props.flavor}
               gitStatusStore={props.gitStatusStore}
               visiblePaths={visiblePaths()}
               showHiddenFiles={showHiddenFiles()}
+              nameLayout={wrapName() ? 'wrap' : 'truncate'}
               turnEndTrigger={props.turnEndTrigger}
               enabled={props.enabled}
               ref={(h) => { treeHandle = h }}

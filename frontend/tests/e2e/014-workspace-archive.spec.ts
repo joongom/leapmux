@@ -204,12 +204,9 @@ test.describe('Workspace Archive', () => {
       const packageJsonNode = page.getByText('package.json')
       await expect(packageJsonNode).toBeVisible()
 
-      // Verify mention button IS visible before archive (via context menu)
-      await packageJsonNode.hover()
+      // Verify mention button IS visible before archive (via right-click context menu)
       const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' })
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      await treeRow.click({ button: 'right' })
       const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton).toBeVisible()
       // Close menu by pressing Escape

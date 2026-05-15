@@ -2,28 +2,35 @@ import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
+import ArrowDownAZ from 'lucide-solid/icons/arrow-down-a-z'
 import AtSign from 'lucide-solid/icons/at-sign'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ClipboardCopy from 'lucide-solid/icons/clipboard-copy'
+import Clock from 'lucide-solid/icons/clock'
 import Copy from 'lucide-solid/icons/copy'
+import Download from 'lucide-solid/icons/download'
+import ExternalLink from 'lucide-solid/icons/external-link'
+import Eye from 'lucide-solid/icons/eye'
+import EyeOff from 'lucide-solid/icons/eye-off'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
-import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
+import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import TerminalIcon from 'lucide-solid/icons/terminal'
 import { createContext, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
+import { useIsMobile } from '~/hooks/useIsMobile'
+import { downloadFileFromWorker, openFileInNewTab } from '~/lib/fileDownload'
+import { formatBytes } from '~/lib/formatBytes'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
-import { menuTrigger, sidebarActions } from './sidebarActions.css'
 
 export interface DirectoryTreeHandle {
   collapseAll: () => void
@@ -46,12 +53,30 @@ export interface DirectoryTreeProps {
    */
   flavor?: PathFlavor
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  /**
+   * Mobile action bar's "Refresh files" button handler. When provided, an
+   * always-on Refresh icon renders at the left of the action bar regardless
+   * of selection state. Wired by `FilesSection` to `treeHandle.refresh()`.
+   */
+  onRefresh?: () => void
+  /**
+   * Mobile action bar's "Toggle hidden files" button handler. When provided,
+   * an always-on Eye/EyeOff icon renders at the left of the action bar.
+   * Wired by `FilesSection` to its `setShowHiddenFiles` setter.
+   */
+  onToggleShowHidden?: () => void
   /** When set, only show nodes whose paths are in this set. */
   visiblePaths?: Set<string>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
   /** When false, entries with hidden=true are filtered out. Defaults to true. */
   showHiddenFiles?: boolean
+  /**
+   * Filename layout mode. `'truncate'` (default) clips long names with
+   * an ellipsis on a single line; `'wrap'` lets the name break onto up
+   * to 3 lines via `-webkit-line-clamp: 3`.
+   */
+  nameLayout?: 'truncate' | 'wrap'
   /**
    * When false, the initial root-children fetch is suppressed. Used to
    * defer a directory listing for a tab whose working dir isn't on disk
@@ -70,6 +95,14 @@ interface TreeNodeData {
   displayName: string
   isDir: boolean
   hidden: boolean
+  /**
+   * File size in bytes; undefined for directories or when unknown.
+   * Stored as `number` (not bigint) so the cache JSON-serializes cleanly —
+   * 2^53 bytes (~9 PB) per file is well above any realistic case.
+   */
+  size?: number
+  /** RFC3339 modified timestamp; empty string when unknown. */
+  modTime?: string
 }
 
 // Content equality for the children cache; see setChildrenInStore.
@@ -81,8 +114,16 @@ function sameTreeEntries(a: readonly TreeNodeData[], b: readonly TreeNodeData[])
   for (let i = 0; i < a.length; i++) {
     const x = a[i]
     const y = b[i]
-    if (x.path !== y.path || x.displayName !== y.displayName || x.isDir !== y.isDir || x.hidden !== y.hidden)
+    if (
+      x.path !== y.path
+      || x.displayName !== y.displayName
+      || x.isDir !== y.isDir
+      || x.hidden !== y.hidden
+      || x.size !== y.size
+      || x.modTime !== y.modTime
+    ) {
       return false
+    }
   }
   return true
 }
@@ -106,11 +147,23 @@ interface TreeContextValue {
   onFileOpen?: (path: string) => void
   onMention?: (path: string) => void
   onOpenTerminal?: (dirPath: string) => void
+  onRefresh?: () => void
+  onToggleShowHidden?: () => void
   isNodeExpanded: (path: string) => boolean
   setNodeExpanded: (path: string, expanded: boolean) => void
   getChildren: (path: string) => TreeNodeData[] | undefined
   setChildren: (path: string, data: TreeNodeData[], truncated: boolean) => void
   isTruncated: (path: string) => boolean
+  /** Open the shared context menu at the given viewport coordinates. */
+  openContextMenuAt: (target: { path: string, isDir: boolean }, x: number, y: number) => void
+  /** Filename layout mode (truncate vs 3-line wrap). */
+  nameLayout: () => 'truncate' | 'wrap'
+  /** Active sort mode for the tree's entries. */
+  sortMode: () => SortMode
+  /** Switch the active sort mode. Persisted in sessionStorage. */
+  setSortMode: (mode: SortMode) => void
+  /** Mobile-only: open the touch action bar for a file row. */
+  openActionBar: (path: string, sourceEl: HTMLElement) => void
 }
 
 const TreeContext = createContext<TreeContextValue>()
@@ -183,10 +236,33 @@ function isPathVisible(path: string, visible: Set<string>, flavor: PathFlavor): 
 // File listing
 // -------------------------------------------------------------------------
 
+/**
+ * Tree sort mode. Two options exposed in the UI:
+ *  - `name-asc`     directories first, then files; both alphabetical
+ *  - `mtime-desc`   directories first, then files; within each group
+ *                   most-recently modified first, ties broken by name
+ */
+export type SortMode = 'name-asc' | 'mtime-desc'
+
+const DEFAULT_SORT_MODE: SortMode = 'name-asc'
+
 function sortEntries(a: FileInfo, b: FileInfo): number {
   if (a.isDir !== b.isDir)
     return a.isDir ? -1 : 1
   return a.name.localeCompare(b.name)
+}
+
+function compareByMode(a: TreeNodeData, b: TreeNodeData, mode: SortMode): number {
+  if (a.isDir !== b.isDir)
+    return a.isDir ? -1 : 1
+  if (mode === 'mtime-desc') {
+    const ta = a.modTime ? Date.parse(a.modTime) : 0
+    const tb = b.modTime ? Date.parse(b.modTime) : 0
+    if (ta !== tb)
+      return tb - ta
+    // tie-break by name
+  }
+  return a.displayName.localeCompare(b.displayName)
 }
 
 async function loadChildren(
@@ -203,64 +279,113 @@ async function loadChildren(
       displayName: entry.name,
       isDir: entry.isDir,
       hidden: entry.hidden,
+      size: entry.isDir ? undefined : Number(entry.size),
+      modTime: entry.modTime,
     })),
     truncated: resp.truncated,
   }
 }
 
-/** Three-dot context menu for a tree node (file or directory). */
+/**
+ * Format a modified timestamp as a compact relative string (e.g. "3s", "12m",
+ * "2h", "5d", "3mo", "2y"). Empty string for invalid/missing timestamps.
+ */
+function formatModTimeShort(modTime: string | undefined): string {
+  if (!modTime)
+    return ''
+  const t = new Date(modTime).getTime()
+  if (Number.isNaN(t))
+    return ''
+  const diffSec = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (diffSec < 60)
+    return `${diffSec}s`
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60)
+    return `${diffMin}m`
+  const diffHr = Math.floor(diffMin / 60)
+  if (diffHr < 24)
+    return `${diffHr}h`
+  const diffDay = Math.floor(diffHr / 24)
+  if (diffDay < 30)
+    return `${diffDay}d`
+  const diffMo = Math.floor(diffDay / 30)
+  if (diffMo < 12)
+    return `${diffMo}mo`
+  const diffYr = Math.floor(diffDay / 365)
+  return `${diffYr}y`
+}
+
+function formatModTimeFull(modTime: string | undefined): string {
+  if (!modTime)
+    return ''
+  const d = new Date(modTime)
+  if (Number.isNaN(d.getTime()))
+    return ''
+  return d.toLocaleString()
+}
+
+/**
+ * Headless context menu for a tree node — rendered once at the
+ * DirectoryTree root and re-targeted by right-click / keyboard shortcut.
+ * Positioning uses DropdownMenu's `anchorRef` + `open` programmatic path:
+ * a single 1×1 invisible `<div>` is moved to the cursor (or focused row's
+ * bottom-left for keyboard) and passed as the anchor. `calcPopoverPosition`
+ * only reads `getBoundingClientRect()`, so this satisfies the contract
+ * without modifying DropdownMenu.
+ */
 const TreeContextMenu: Component<{
-  path: string
-  isDir: boolean
+  open: () => boolean
+  anchorRef: () => HTMLElement | undefined
+  target: () => { path: string, isDir: boolean } | null
+  onClose: () => void
 }> = (props) => {
   const tree = useTree()
+  const path = () => props.target()?.path ?? ''
+  const isDir = () => props.target()?.isDir ?? false
 
   return (
     <DropdownMenu
-      trigger={triggerProps => (
-        <IconButton
-          icon={MoreHorizontal}
-          iconSize="sm"
-          size="sm"
-          class={menuTrigger}
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation()
-            triggerProps.onClick()
-          }}
-          ref={triggerProps.ref}
-          onPointerDown={(e: PointerEvent) => {
-            e.stopPropagation()
-            triggerProps.onPointerDown()
-          }}
-          aria-expanded={triggerProps['aria-expanded']}
-          data-testid="tree-context-button"
-        />
-      )}
+      anchorRef={props.anchorRef}
+      open={props.open}
+      onToggle={(open) => {
+        if (!open)
+          props.onClose()
+      }}
     >
       <Show when={tree.onMention}>
         <button
           role="menuitem"
           data-testid="tree-mention-button"
-          onClick={() => tree.onMention?.(props.path)}
+          onClick={() => tree.onMention?.(path())}
         >
           <Icon icon={AtSign} size="sm" />
           Mention in chat
         </button>
       </Show>
-      <Show when={props.isDir && tree.onOpenTerminal}>
+      <Show when={isDir() && tree.onOpenTerminal}>
         <button
           role="menuitem"
           data-testid="tree-open-terminal-button"
-          onClick={() => tree.onOpenTerminal?.(props.path)}
+          onClick={() => tree.onOpenTerminal?.(path())}
         >
           <Icon icon={TerminalIcon} size="sm" />
           Open a terminal tab here
         </button>
       </Show>
+      <Show when={!isDir()}>
+        <button
+          role="menuitem"
+          data-testid="tree-download-button"
+          onClick={() => { void downloadFileFromWorker(tree.workerId, path(), tree.flavor()) }}
+        >
+          <Icon icon={Download} size="sm" />
+          Download
+        </button>
+      </Show>
       <button
         role="menuitem"
         data-testid="tree-copy-path-button"
-        onClick={() => navigator.clipboard.writeText(props.path)}
+        onClick={() => navigator.clipboard.writeText(path())}
       >
         <Icon icon={Copy} size="sm" />
         Copy path
@@ -269,9 +394,10 @@ const TreeContextMenu: Component<{
         role="menuitem"
         data-testid="tree-copy-relative-path-button"
         onClick={() => {
-          const rel = props.path === tree.rootPath
+          const p = path()
+          const rel = p === tree.rootPath
             ? '.'
-            : relativizePath(props.path, tree.rootPath, tree.homeDir, tree.flavor())
+            : relativizePath(p, tree.rootPath, tree.homeDir, tree.flavor())
           navigator.clipboard.writeText(rel)
         }}
       >
@@ -279,6 +405,185 @@ const TreeContextMenu: Component<{
         Copy relative path
       </button>
     </DropdownMenu>
+  )
+}
+
+/**
+ * Sticky-top mobile action bar (T4/T7). Mounted unconditionally on
+ * mobile so its layout slot is occupied at all times — tapping a file
+ * row toggles the disabled-state of the buttons rather than mounting
+ * the bar, eliminating the row-shift the user complained about. Outside-
+ * click and Esc clear the target (re-disabling the buttons); they no
+ * longer unmount the bar.
+ */
+const TreeActionBar: Component<{
+  target: () => { path: string } | null
+  onClose: () => void
+}> = (props) => {
+  const tree = useTree()
+  let barRef: HTMLDivElement | undefined
+  let firstButtonRef: HTMLButtonElement | undefined
+
+  const path = () => props.target()?.path ?? ''
+  const name = () => path() ? basename(path(), tree.flavor()) : ''
+  const disabled = () => props.target() === null
+
+  const close = () => props.onClose()
+
+  const runAndClose = (fn: () => void | Promise<void>) => {
+    if (disabled())
+      return
+    void Promise.resolve().then(fn).finally(close)
+  }
+
+  // Outside-click clears the target (re-disables buttons). The bar
+  // itself stays mounted at all times.
+  const onPointerDown = (e: PointerEvent) => {
+    if (!props.target())
+      return
+    const t = e.target as Node | null
+    if (barRef && t && !barRef.contains(t))
+      close()
+  }
+
+  createEffect(() => {
+    if (props.target() !== null) {
+      document.addEventListener('pointerdown', onPointerDown, { capture: true })
+      // Auto-focus first action so Tab/Esc have a target.
+      queueMicrotask(() => firstButtonRef?.focus())
+    }
+    else {
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true })
+    }
+  })
+
+  onCleanup(() => {
+    document.removeEventListener('pointerdown', onPointerDown, { capture: true })
+  })
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      close()
+    }
+  }
+
+  return (
+    <>
+      <div
+        ref={barRef}
+        class={styles.actionBar}
+        role="toolbar"
+        aria-label="File actions"
+        onKeyDown={onKeyDown}
+      >
+        <Show when={tree.onRefresh}>
+          <button
+            type="button"
+            class={styles.actionBarButton}
+            title="Refresh files"
+            aria-label="Refresh files"
+            data-testid="tree-action-refresh"
+            onClick={() => tree.onRefresh?.()}
+          >
+            <Icon icon={RefreshCw} size="sm" />
+          </button>
+        </Show>
+        <Show when={tree.onToggleShowHidden}>
+          <button
+            type="button"
+            class={styles.actionBarButton}
+            title="Toggle hidden files"
+            aria-label="Toggle hidden files"
+            aria-pressed={!tree.showHiddenFiles ? 'true' : 'false'}
+            data-testid="tree-action-toggle-hidden"
+            onClick={() => tree.onToggleShowHidden?.()}
+          >
+            <Icon icon={tree.showHiddenFiles ? Eye : EyeOff} size="sm" />
+          </button>
+        </Show>
+        <Show when={tree.onRefresh || tree.onToggleShowHidden}>
+          <span class={styles.actionBarDivider} aria-hidden="true" />
+        </Show>
+        <button
+          ref={firstButtonRef}
+          type="button"
+          class={styles.actionBarButton}
+          title="Open in new tab"
+          data-testid="tree-action-open-new-tab"
+          disabled={disabled()}
+          aria-disabled={disabled() ? 'true' : 'false'}
+          tabIndex={disabled() ? -1 : 0}
+          // eslint-disable-next-line solid/reactivity -- onClick handler; reads tree fields on user invocation, not tracked
+          onClick={() => runAndClose(() => openFileInNewTab(tree.workerId, path(), tree.flavor()))}
+        >
+          <Icon icon={ExternalLink} size="sm" />
+        </button>
+        <button
+          type="button"
+          class={styles.actionBarButton}
+          title="Download"
+          data-testid="tree-action-download"
+          disabled={disabled()}
+          aria-disabled={disabled() ? 'true' : 'false'}
+          tabIndex={disabled() ? -1 : 0}
+          // eslint-disable-next-line solid/reactivity -- onClick handler; reads tree fields on user invocation, not tracked
+          onClick={() => runAndClose(() => downloadFileFromWorker(tree.workerId, path(), tree.flavor()))}
+        >
+          <Icon icon={Download} size="sm" />
+        </button>
+        <Show when={tree.onMention}>
+          <button
+            type="button"
+            class={styles.actionBarButton}
+            title="Mention in chat"
+            data-testid="tree-action-mention"
+            disabled={disabled()}
+            aria-disabled={disabled() ? 'true' : 'false'}
+            tabIndex={disabled() ? -1 : 0}
+            // eslint-disable-next-line solid/reactivity -- onClick handler; reads tree.onMention on user invocation
+            onClick={() => runAndClose(() => tree.onMention?.(path()))}
+          >
+            <Icon icon={AtSign} size="sm" />
+          </button>
+        </Show>
+        <button
+          type="button"
+          class={styles.actionBarButton}
+          title="Copy path"
+          data-testid="tree-action-copy-path"
+          disabled={disabled()}
+          aria-disabled={disabled() ? 'true' : 'false'}
+          tabIndex={disabled() ? -1 : 0}
+          // eslint-disable-next-line solid/reactivity -- onClick handler
+          onClick={() => runAndClose(() => { void navigator.clipboard.writeText(path()) })}
+        >
+          <Icon icon={Copy} size="sm" />
+        </button>
+        <button
+          type="button"
+          class={styles.actionBarButton}
+          title="Copy relative path"
+          data-testid="tree-action-copy-relative-path"
+          disabled={disabled()}
+          aria-disabled={disabled() ? 'true' : 'false'}
+          tabIndex={disabled() ? -1 : 0}
+          // eslint-disable-next-line solid/reactivity -- onClick handler
+          onClick={() => runAndClose(() => {
+            const p = path()
+            const rel = p === tree.rootPath
+              ? '.'
+              : relativizePath(p, tree.rootPath, tree.homeDir, tree.flavor())
+            void navigator.clipboard.writeText(rel)
+          })}
+        >
+          <Icon icon={ClipboardCopy} size="sm" />
+        </button>
+      </div>
+      <div class={styles.actionBarLiveRegion} aria-live="polite">
+        {name() ? `Selected ${name()}` : ''}
+      </div>
+    </>
   )
 }
 
@@ -291,26 +596,30 @@ const TreeNode: Component<{
   depth: number
 }> = (props) => {
   const tree = useTree()
+  const isMobile = useIsMobile()
   const [loading, setLoading] = createSignal(false)
   let wrapperRef!: HTMLDivElement
   let nodeRef!: HTMLDivElement
   let childrenRef: HTMLDivElement | undefined
+  const wrapMode = () => tree.nameLayout() === 'wrap'
 
   const expanded = () => tree.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
   const allChildren = () => tree.getChildren(props.node.path) ?? []
-  const children = () => {
+  const children = createMemo(() => {
     const all = allChildren()
     const showHidden = tree.showHiddenFiles
     const visible = tree.visiblePaths()
-    if (showHidden && !visible)
-      return all
     const flavor = tree.flavor()
-    return all.filter(c =>
-      (showHidden || !c.hidden)
-      && (!visible || isPathVisible(c.path, visible, flavor)),
-    )
-  }
+    const mode = tree.sortMode()
+    const filtered = (showHidden && !visible)
+      ? all.slice()
+      : all.filter(c =>
+          (showHidden || !c.hidden)
+          && (!visible || isPathVisible(c.path, visible, flavor)),
+        )
+    return filtered.sort((a, b) => compareByMode(a, b, mode))
+  })
   const loaded = () => tree.getChildren(props.node.path) !== undefined
 
   const doScroll = () => {
@@ -371,16 +680,29 @@ const TreeNode: Component<{
   const toggle = async () => {
     if (!props.node.isDir) {
       tree.onSelect(props.node.path)
+      // Mobile single-tap on a file row opens the touch action bar
+      // instead of firing onFileOpen directly. Desktop / wide viewports
+      // keep the existing behaviour.
+      if (isMobile()) {
+        tree.openActionBar(props.node.path, nodeRef)
+        return
+      }
       tree.onFileOpen?.(props.node.path)
       return
     }
     await doLoad()
     const willExpand = !expanded()
 
-    // Set expanded state before onSelect so that the scroll-on-select
-    // effect sees the correct state and skips scrolling on collapse.
+    // Directory tap = expand/collapse only — no selection (ux-pass4 AC3).
+    // Selection drives the path-input + action bar; folders should not
+    // appear "active" merely because the user wanted to peek inside.
     tree.setNodeExpanded(props.node.path, willExpand)
-    tree.onSelect(props.node.path)
+    // If this folder was already selected (e.g. via path-input or external
+    // restore), expanding it clears that stale folder selection — folders
+    // never carry a selected visual.
+    if (willExpand && props.selectedPath === props.node.path) {
+      tree.onSelect('')
+    }
     if (willExpand) {
       scrollIntoViewIfNeeded()
     }
@@ -457,7 +779,12 @@ const TreeNode: Component<{
     }
   })
 
-  const indent = () => `${8 + props.depth * 16}px`
+  // When selected we add a 4px `border-left` accent (see DirectoryTree.css.ts
+  // — `.node.nodeSelected`). Subtract that 4px from the inline padding-left
+  // so the icon does not shift horizontally on selection / deselection.
+  // Directories never receive the selected class (ux-pass4 AC3), so the
+  // compensation only applies to file rows.
+  const indent = () => `${8 + props.depth * 16 - (isSelected() && !props.node.isDir ? 4 : 0)}px`
   const gitIcon = createMemo<GitIconInfo>(() => {
     const store = tree.gitStatusStore()
     if (!store)
@@ -475,15 +802,48 @@ const TreeNode: Component<{
     return store ? store.getNodeDiffStats(props.node.path, props.node.isDir) : null
   })
 
+  const handleContextMenu = (e: MouseEvent) => {
+    e.preventDefault()
+    tree.openContextMenuAt(
+      { path: props.node.path, isDir: props.node.isDir },
+      e.clientX,
+      e.clientY,
+    )
+  }
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault()
+      const r = nodeRef.getBoundingClientRect()
+      tree.openContextMenuAt(
+        { path: props.node.path, isDir: props.node.isDir },
+        r.left,
+        r.bottom,
+      )
+    }
+  }
+
   return (
     <div ref={wrapperRef}>
       <div
         ref={nodeRef}
         class={styles.node}
-        classList={{ [styles.nodeSelected]: isSelected() }}
-        style={{ 'padding-left': indent() }}
+        classList={{
+          [styles.nodeSelected]: isSelected() && !props.node.isDir,
+          [styles.nodeWrap]: wrapMode(),
+        }}
+        style={{
+          'padding-left': indent(),
+          // File rows use the OS-standard context-menu cursor to signal
+          // that right-click is the primary action surface. Directory
+          // rows keep `pointer` (toggle expand/collapse).
+          ...(props.node.isDir ? {} : { cursor: 'context-menu' }),
+        }}
+        tabindex="0"
         data-testid="tree-row"
         onClick={toggle}
+        onContextMenu={handleContextMenu}
+        onKeyDown={handleKeyDown}
       >
         <Show
           when={props.node.isDir}
@@ -503,15 +863,32 @@ const TreeNode: Component<{
           </Show>
         </Show>
         <RowLabelWithStats
-          label={<span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>}
+          label={(
+            <span
+              class={
+                wrapMode()
+                  ? (props.node.hidden ? styles.nodeNameMutedWrap : styles.nodeNameWrap)
+                  : (props.node.hidden ? styles.nodeNameMuted : styles.nodeName)
+              }
+              title={props.node.displayName}
+            >
+              {props.node.displayName}
+            </span>
+          )}
           tooltipLabel={props.node.displayName}
           stats={diffStats()}
         />
-        <div class={sidebarActions}>
-          <TreeContextMenu
-            path={props.node.path}
-            isDir={props.node.isDir}
-          />
+        <div class={styles.rightCluster}>
+          <div class={styles.nodeMeta} aria-hidden="true">
+            <span class={styles.nodeSize}>
+              <Show when={!props.node.isDir && props.node.size !== undefined}>
+                {formatBytes(props.node.size!)}
+              </Show>
+            </span>
+            <span class={styles.nodeModTime} title={formatModTimeFull(props.node.modTime)}>
+              {formatModTimeShort(props.node.modTime)}
+            </span>
+          </div>
         </div>
       </div>
       <Show when={loading()}>
@@ -549,11 +926,73 @@ const TreeNode: Component<{
 }
 
 export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
+  const isMobile = useIsMobile()
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [inputValue, setInputValue] = createSignal('')
   let loadVersion = 0
   let treeRef!: HTMLDivElement
+  let rootRowRef!: HTMLDivElement
+  // 1×1 invisible anchor used by the shared context menu. Positioned to
+  // `(clientX, clientY)` on right-click or to the focused row's
+  // `left, bottom` on Shift+F10 / ContextMenu key — DropdownMenu only
+  // calls `getBoundingClientRect()` on the anchor, so a hidden div is
+  // sufficient without modifying the shared DropdownMenu component.
+  let virtualAnchorEl!: HTMLDivElement
+
+  // Shared context-menu state — one menu instance per DirectoryTree,
+  // re-targeted by each row. Avoids mounting one popover per row.
+  const [menuTarget, setMenuTarget] = createSignal<{ path: string, isDir: boolean } | null>(null)
+  const openContextMenuAt = (target: { path: string, isDir: boolean }, x: number, y: number) => {
+    virtualAnchorEl.style.left = `${x}px`
+    virtualAnchorEl.style.top = `${y}px`
+    setMenuTarget(target)
+  }
+
+  // Mobile touch action-bar state.
+  const [actionTarget, setActionTarget] = createSignal<{ path: string } | null>(null)
+  let actionSourceEl: HTMLElement | null = null
+  const openActionBar = (path: string, sourceEl: HTMLElement) => {
+    actionSourceEl = sourceEl
+    setActionTarget({ path })
+  }
+  const closeActionBar = () => {
+    setActionTarget(null)
+    // Defer focus restore so any pending click handlers settle first.
+    const el = actionSourceEl
+    actionSourceEl = null
+    if (el)
+      queueMicrotask(() => el.focus())
+  }
+
+  const nameLayoutMode = () => props.nameLayout ?? 'truncate'
+
+  // Sort mode signal. Persisted across reloads via `sortModeStorageKey` so
+  // the user's last choice is restored. Default `name-asc` matches the
+  // historical sort order.
+  const sortModeStorageKey = () => `directoryTree:sortMode:${props.rootPath ?? '~'}:${props.showFiles ? 'files' : 'dirs'}`
+  const readPersistedSortMode = (): SortMode => {
+    try {
+      const raw = sessionStorage.getItem(sortModeStorageKey())
+      return raw === 'mtime-desc' ? 'mtime-desc' : DEFAULT_SORT_MODE
+    }
+    catch {
+      return DEFAULT_SORT_MODE
+    }
+  }
+  const [sortMode, setSortModeSignal] = createSignal<SortMode>(DEFAULT_SORT_MODE)
+  const setSortMode = (mode: SortMode) => {
+    setSortModeSignal(mode)
+    try {
+      sessionStorage.setItem(sortModeStorageKey(), mode)
+    }
+    catch { /* quota / private mode — non-fatal */ }
+  }
+  // Re-sync sort mode whenever the storage key changes (rootPath swap).
+  createEffect(() => {
+    void sortModeStorageKey()
+    setSortModeSignal(readPersistedSortMode())
+  })
 
   // When the tree container shrinks (e.g. WorktreeOptions appearing below),
   // re-scroll the selected node into view if it was pushed out.
@@ -689,20 +1128,22 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
 
   // Root children derived from the centralized cache, optionally filtered.
   const showHidden = () => props.showHiddenFiles ?? true
-  const rootChildren = () => {
+  const rootChildren = createMemo(() => {
     const all = getChildren(rootPath())
     if (!all)
       return undefined
     const sh = showHidden()
     const visible = props.visiblePaths
-    if (sh && !visible)
-      return all
     const flavor = workerFlavor()
-    return all.filter(c =>
-      (sh || !c.hidden)
-      && (!visible || isPathVisible(c.path, visible, flavor)),
-    )
-  }
+    const mode = sortMode()
+    const filtered = (sh && !visible)
+      ? all.slice()
+      : all.filter(c =>
+          (sh || !c.hidden)
+          && (!visible || isPathVisible(c.path, visible, flavor)),
+        )
+    return filtered.sort((a, b) => compareByMode(a, b, mode))
+  })
 
   const submitPath = (raw: string) => {
     const value = raw.trim()
@@ -830,15 +1271,43 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     get onFileOpen() { return props.onFileOpen },
     get onMention() { return props.onMention },
     get onOpenTerminal() { return props.onOpenTerminal },
+    get onRefresh() { return props.onRefresh },
+    get onToggleShowHidden() { return props.onToggleShowHidden },
     isNodeExpanded,
     setNodeExpanded,
     getChildren,
     setChildren: setChildrenInStore,
     isTruncated,
+    openContextMenuAt,
+    nameLayout: nameLayoutMode,
+    sortMode,
+    setSortMode,
+    openActionBar,
   }
 
   return (
     <TreeContext.Provider value={treeContextValue}>
+      {/* Virtual anchor for the shared context menu — positioned to
+          (clientX, clientY) on right-click or to the row's left/bottom on
+          keyboard. `position: fixed` + `pointer-events: none` so it never
+          interferes with row interaction. */}
+      <div
+        ref={virtualAnchorEl}
+        aria-hidden="true"
+        style={{
+          'position': 'fixed',
+          'width': '1px',
+          'height': '1px',
+          'pointer-events': 'none',
+          'opacity': 0,
+        }}
+      />
+      <TreeContextMenu
+        open={() => menuTarget() !== null}
+        anchorRef={() => virtualAnchorEl}
+        target={menuTarget}
+        onClose={() => setMenuTarget(null)}
+      />
       <div class={styles.container}>
         <div class={styles.pathInput}>
           <Tooltip text={props.selectedPath} showWhen="clipped">
@@ -852,6 +1321,49 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               placeholder="Enter path..."
             />
           </Tooltip>
+          <DropdownMenu
+            trigger={triggerProps => (
+              <button
+                type="button"
+                class={styles.sortButton}
+                title={sortMode() === 'mtime-desc' ? '정렬: 최신 수정 순' : '정렬: 이름 오름차순'}
+                aria-label="정렬 방식"
+                data-testid="tree-sort-button"
+                {...triggerProps}
+              >
+                <Icon
+                  icon={sortMode() === 'mtime-desc' ? Clock : ArrowDownAZ}
+                  size="sm"
+                />
+              </button>
+            )}
+            placement={{ placement: 'auto' }}
+          >
+            <button
+              role="menuitemradio"
+              aria-checked={sortMode() === 'name-asc'}
+              data-testid="tree-sort-name-asc"
+              onClick={(e) => {
+                setSortMode('name-asc')
+                ;(e.currentTarget.closest('[popover]') as HTMLElement | null)?.hidePopover()
+              }}
+            >
+              <Icon icon={ArrowDownAZ} size="sm" />
+              이름 오름차순
+            </button>
+            <button
+              role="menuitemradio"
+              aria-checked={sortMode() === 'mtime-desc'}
+              data-testid="tree-sort-mtime-desc"
+              onClick={(e) => {
+                setSortMode('mtime-desc')
+                ;(e.currentTarget.closest('[popover]') as HTMLElement | null)?.hidePopover()
+              }}
+            >
+              <Icon icon={Clock} size="sm" />
+              최신 수정 순
+            </button>
+          </DropdownMenu>
         </div>
         <Show when={flavorHint()}>
           {hint => (
@@ -859,28 +1371,55 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           )}
         </Show>
         <div class={styles.tree} ref={treeRef}>
+          {/* On mobile the action bar is always mounted (T4) so tapping a
+              file row never causes a layout shift — only its disabled
+              state flips. On desktop the bar is omitted entirely; the
+              right-click / Shift+F10 context menu remains the primary
+              action surface there. */}
+          <Show when={isMobile()}>
+            <TreeActionBar
+              target={actionTarget}
+              onClose={closeActionBar}
+            />
+          </Show>
           <Switch fallback={(
             <div class={styles.treeInner}>
               {/* Root directory row */}
               <div
+                ref={rootRowRef}
                 class={styles.node}
-                classList={{ [styles.nodeSelected]: props.selectedPath === rootPath() }}
+                classList={{
+                  [styles.nodeWrap]: nameLayoutMode() === 'wrap',
+                }}
                 style={{ 'padding-left': '8px' }}
+                tabindex="0"
                 data-testid="tree-root-node"
                 onClick={() => props.onSelect(rootPath())}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  openContextMenuAt({ path: rootPath(), isDir: true }, e.clientX, e.clientY)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+                    e.preventDefault()
+                    const r = rootRowRef.getBoundingClientRect()
+                    openContextMenuAt({ path: rootPath(), isDir: true }, r.left, r.bottom)
+                  }
+                }}
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
                 <RowLabelWithStats
-                  label={<span class={styles.nodeName}>{rootDisplayName()}</span>}
+                  label={(
+                    <span
+                      class={nameLayoutMode() === 'wrap' ? styles.nodeNameWrap : styles.nodeName}
+                      title={rootDisplayName()}
+                    >
+                      {rootDisplayName()}
+                    </span>
+                  )}
                   tooltipLabel={rootDisplayName()}
                   stats={rootDiffStats()}
                 />
-                <div class={sidebarActions}>
-                  <TreeContextMenu
-                    path={rootPath()}
-                    isDir
-                  />
-                </div>
               </div>
               <Show when={rootChildren() !== undefined}>
                 <div class={`${styles.childrenWrapper} ${styles.childrenWrapperExpanded}`}>

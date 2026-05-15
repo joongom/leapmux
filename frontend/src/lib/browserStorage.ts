@@ -60,6 +60,11 @@ export const PREFIX_ASK_STATE = 'leapmux:ask-state:'
 export const PREFIX_WORKER_INFO = 'leapmux:worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'leapmux:local-messages:'
 export const PREFIX_FILES_SHOW_HIDDEN = 'leapmux:files-show-hidden:'
+// v2: bumped from `files-name-wrap:` so previously-stored `false` values
+// from pass2 are ignored and the new `true` default takes effect cleanly.
+// Old v1 keys are reaped by `runCleanup()` within the dynamic-key TTL
+// window (7 days) — no explicit migration code required.
+export const PREFIX_FILES_NAME_WRAP = 'leapmux:files-name-wrap-v2:'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
@@ -75,6 +80,7 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
   { prefix: PREFIX_WORKER_INFO, ttlMs: 7 * DAY_MS },
   { prefix: PREFIX_LOCAL_MESSAGES, ttlMs: 7 * DAY_MS },
   { prefix: PREFIX_FILES_SHOW_HIDDEN, ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_FILES_NAME_WRAP, ttlMs: 7 * DAY_MS },
 ]
 
 // ---------------------------------------------------------------------------
