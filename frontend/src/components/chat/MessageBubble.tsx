@@ -27,6 +27,7 @@ import * as chatStyles from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
+import { RelativeTime } from './RelativeTime'
 import { renderJsonHighlight, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
@@ -52,7 +53,7 @@ function renderErrorFallback(label: string) {
   }
 }
 
-function sourceLabel(source: MessageSource): string {
+export function sourceLabel(source: MessageSource): string {
   switch (source) {
     case MessageSource.USER: return 'user'
     case MessageSource.AGENT: return 'agent'
@@ -64,6 +65,29 @@ function sourceLabel(source: MessageSource): string {
     // to 'agent'.
     default: return 'agent'
   }
+}
+
+/** Capitalize first letter of a label for display in the assistant header. */
+function displayName(label: string): string {
+  return label.length > 0 ? label[0].toUpperCase() + label.slice(1) : label
+}
+
+/**
+ * Avatar + name + timestamp header for flat assistant rows. Exported so the
+ * streaming-text path in ChatView (which renders a raw assistantMessage div
+ * before the message is committed to a MessageBubble) can render the same
+ * attributed header during streaming. `createdAt` is optional — when omitted
+ * (or empty), RelativeTime renders nothing for the timestamp slot.
+ */
+export const AssistantHeader: Component<{ name: string, createdAt?: string }> = (props) => {
+  const initial = () => props.name.length > 0 ? props.name[0] : '?'
+  return (
+    <div class={chatStyles.assistantHeader} data-testid="assistant-header">
+      <span class={chatStyles.assistantAvatar} aria-hidden="true">{initial()}</span>
+      <span class={chatStyles.assistantName}>{props.name}</span>
+      <RelativeTime timestamp={props.createdAt ?? ''} class={chatStyles.assistantTimestamp} />
+    </div>
+  )
 }
 
 function injectCopyButtons(container: HTMLElement): Array<() => void> {
@@ -327,6 +351,15 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const bubbleClass = () => isPendingUserMessage()
     ? chatStyles.userMessagePending
     : messageBubbleClass(category().kind, props.message.source)
+  // Show assistant header (avatar + name + timestamp) only for flat
+  // assistant_text / assistant_thinking rows. TODO(QA): plumb a real
+  // `agentName` prop through ChatView once a per-agent display name is
+  // wired (see spec QA notes).
+  const showAssistantHeader = () => {
+    const kind = category().kind
+    return kind === 'assistant_text' || kind === 'assistant_thinking'
+  }
+  const assistantDisplayName = () => displayName(sourceLabel(props.message.source))
 
   onMount(() => {
     if (!contentRef)
@@ -349,6 +382,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           data-testid="message-bubble"
           data-role={sourceLabel(props.message.source)}
         >
+          <Show when={showAssistantHeader()}>
+            <AssistantHeader name={assistantDisplayName()} createdAt={props.message.createdAt} />
+          </Show>
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
               {category().kind === 'hidden'

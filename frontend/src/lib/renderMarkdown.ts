@@ -91,6 +91,25 @@ function rehypeExternalLinks() {
   }
 }
 
+/**
+ * Rehype plugin that unwraps `<del>` nodes — disables GFM strikethrough rendering.
+ * `~text~` / `~~text~~` parse to `<del>` via remark-gfm; we splice the children
+ * in place so range expressions like "7~11월" render as plain text without a
+ * stale strikethrough or DOM/A11y artifact.
+ */
+function rehypeUnwrapDel() {
+  return (tree: Root) => {
+    visit(tree, 'element', (node, index, parent) => {
+      if (node.tagName !== 'del')
+        return
+      if (parent && typeof index === 'number') {
+        parent.children.splice(index, 1, ...node.children)
+        return index
+      }
+    })
+  }
+}
+
 const processor = unified()
   .use(remarkParse)
   .use(remarkGfm)
@@ -100,6 +119,7 @@ const processor = unified()
     defaultColor: false,
   })
   .use(rehypeExternalLinks)
+  .use(rehypeUnwrapDel)
   .use(rehypeStringify)
 
 /** Fallback processor without Shiki (used when syntax highlighting fails). */
@@ -108,6 +128,7 @@ const plainProcessor = unified()
   .use(remarkGfm)
   .use(remarkRehype)
   .use(rehypeExternalLinks)
+  .use(rehypeUnwrapDel)
   .use(rehypeStringify)
 
 // LRU cache for rendered markdown: avoids re-running the full remark+shiki pipeline

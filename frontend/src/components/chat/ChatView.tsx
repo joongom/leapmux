@@ -13,7 +13,7 @@ import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount,
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -21,7 +21,7 @@ import { spinner } from '~/styles/animations.css'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
-import { classifyParsedMessage, MessageBubble } from './MessageBubble'
+import { AssistantHeader, classifyParsedMessage, MessageBubble, sourceLabel } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
 import { ToolUseLayout } from './toolRenderers'
 import { useChatScroll } from './useChatScroll'
@@ -34,6 +34,13 @@ export interface ChatScrollApi {
   getScrollState: () => ChatScrollState | undefined
   forceScrollToBottom: () => void
   pageScroll: (direction: -1 | 1) => void
+  /**
+   * Fresh DOM measurement of the sticky-bottom state. Used by the
+   * editor focus handler so that tapping the textarea on mobile only
+   * yanks the view to the latest message when the user was already
+   * reading at the bottom.
+   */
+  isAtBottomFresh: () => boolean
 }
 
 interface ChatViewProps {
@@ -186,6 +193,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       getScrollState: scroll.getScrollState,
       forceScrollToBottom: scroll.forceScrollToBottom,
       pageScroll: scroll.pageScroll,
+      isAtBottomFresh: scroll.isAtBottomFresh,
     })
   })
 
@@ -369,6 +377,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     when={props.streamingType === 'plan'}
                     fallback={(
                       <div class={assistantMessage}>
+                        <AssistantHeader name={sourceLabel(MessageSource.AGENT).replace(/^./, c => c.toUpperCase())} />
                         {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
                         <div class={markdownContent} innerHTML={renderedStreamHtml()} />
                       </div>

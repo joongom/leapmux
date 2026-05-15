@@ -186,6 +186,12 @@ export function messageBubbleClass(kind: MessageCategory['kind'], source: Messag
     return chatStyles.thinkingMessage
   if (kind === 'plan_execution')
     return chatStyles.planExecutionMessage
+  // Tool kinds get the cyan-tinted card chrome. This branch must precede the
+  // generic META_KINDS fallback so the other meta kinds (agent_prompt,
+  // control_response, compact_summary, hidden, result_divider, notification,
+  // task_notification) continue to receive plain metaMessage chrome.
+  if (kind === 'tool_use' || kind === 'tool_result')
+    return chatStyles.toolCard
   if (META_KINDS.has(kind))
     return chatStyles.metaMessage
   return sourceStyle(source)

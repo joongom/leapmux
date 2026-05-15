@@ -414,9 +414,12 @@ describe('messageBubbleClass', () => {
     expect(messageBubbleClass('assistant_thinking', MessageSource.AGENT)).toBe(chatStyles.thinkingMessage)
   })
 
-  it('returns metaMessage for meta kinds', () => {
-    expect(messageBubbleClass('tool_use', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('tool_result', MessageSource.USER)).toBe(chatStyles.metaMessage)
+  it('returns toolCard for tool_use / tool_result', () => {
+    expect(messageBubbleClass('tool_use', MessageSource.AGENT)).toBe(chatStyles.toolCard)
+    expect(messageBubbleClass('tool_result', MessageSource.USER)).toBe(chatStyles.toolCard)
+  })
+
+  it('returns metaMessage for non-tool meta kinds', () => {
     expect(messageBubbleClass('hidden', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
     expect(messageBubbleClass('result_divider', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
     expect(messageBubbleClass('control_response', MessageSource.USER)).toBe(chatStyles.metaMessage)

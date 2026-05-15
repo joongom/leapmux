@@ -197,13 +197,18 @@ export const toolInputPath = style({
 
 // Tool header actions area (right-aligned group for Code + ThreadExpander buttons)
 export const toolHeaderActions = style({
-  display: 'flex',
-  alignItems: 'center',
-  height: '1lh',
-  gap: '2px',
-  flexShrink: 0,
-  opacity: 0,
-  transition: 'opacity 0.15s',
+  'display': 'flex',
+  'alignItems': 'center',
+  'height': '1lh',
+  'gap': '2px',
+  'flexShrink': 0,
+  'opacity': 0,
+  'transition': 'opacity 0.15s ease',
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
 })
 
 // Timestamp text in tool header actions (muted, small)
