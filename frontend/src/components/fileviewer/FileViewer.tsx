@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { FileViewMode } from '~/lib/fileType'
+import type { PathFlavor } from '~/lib/paths'
 import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.store'
 import AtSign from 'lucide-solid/icons/at-sign'
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
@@ -12,13 +13,13 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
 import { detectFileViewMode, isImageExtension } from '~/lib/fileType'
 import { formatBytes } from '~/lib/formatBytes'
+import { detectFlavor } from '~/lib/paths'
 import { DiffModeToolbar } from './DiffModeToolbar'
 import * as styles from './FileViewer.css'
-import { TOOLBAR_CLEARANCE_PX } from './FileViewer.css'
-import { HexView } from './HexView'
 import { ImageFileView } from './ImageFileView'
 import { MarkdownFileView } from './MarkdownFileView'
 import { TextFileView } from './TextFileView'
+import { UnsupportedFileView } from './UnsupportedFileView'
 
 const MAX_FILE_SIZE = 256 * 1024 // 256 KiB
 
@@ -35,6 +36,11 @@ export const FileViewer: Component<{
   hasStagedAndUnstaged?: boolean
   onFileViewModeChange?: (mode: TabFileViewMode) => void
   onFileDiffBaseChange?: (base: FileDiffBase) => void
+  /**
+   * Path flavor for the worker; defaults to a best-effort sniff from
+   * `filePath`. Used by the unsupported-file card to format the filename.
+   */
+  flavor?: PathFlavor
 }> = (props) => {
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
@@ -158,6 +164,37 @@ export const FileViewer: Component<{
   ))
 
   const isTruncated = () => content() !== null && content()!.length < totalSize()
+
+  const flavor = createMemo(() => props.flavor ?? detectFlavor(props.filePath))
+
+  // True when the inline content should be replaced by the
+  // UnsupportedFileView card: binary mode, over-cap image, or truncated
+  // text-ish content. Only applies in working mode (not diff/ref).
+  const showCard = createMemo(() => {
+    if (loading() || error())
+      return false
+    if (props.fileViewMode !== undefined && props.fileViewMode !== 'working')
+      return false
+    if (imageTooLarge())
+      return true
+    if (viewMode() === 'binary')
+      return true
+    if (isTruncated() && viewMode() !== 'image')
+      return true
+    return false
+  })
+
+  const cardReason = createMemo<'binary' | 'oversize-text' | 'oversize-image' | null>(() => {
+    if (!showCard())
+      return null
+    if (imageTooLarge())
+      return 'oversize-image'
+    if (viewMode() === 'binary')
+      return 'binary'
+    if (isTruncated())
+      return 'oversize-text'
+    return null
+  })
 
   const showToolbar = () => props.fileViewMode !== undefined
 
@@ -310,12 +347,16 @@ export const FileViewer: Component<{
 
           {/* Working mode or no mode: show normal file content */}
           <Show when={!isDiffMode() && !isRefMode()}>
-            <Show when={imageTooLarge()}>
-              <div class={styles.imageSizeError}>
-                {`Image too large to preview (${formatBytes(totalSize())})`}
-              </div>
+            <Show when={showCard() && cardReason() !== null}>
+              <UnsupportedFileView
+                workerId={props.workerId}
+                filePath={props.filePath}
+                flavor={flavor()}
+                totalSize={totalSize()}
+                reason={cardReason()!}
+              />
             </Show>
-            <Show when={viewMode() === 'text' && content()}>
+            <Show when={!showCard() && viewMode() === 'text' && content()}>
               <TextFileView
                 content={content()!}
                 filePath={props.filePath}
@@ -323,7 +364,7 @@ export const FileViewer: Component<{
                 onQuote={props.onQuote}
               />
             </Show>
-            <Show when={viewMode() === 'markdown' && content()}>
+            <Show when={!showCard() && viewMode() === 'markdown' && content()}>
               <MarkdownFileView
                 content={content()!}
                 filePath={props.filePath}
@@ -334,7 +375,7 @@ export const FileViewer: Component<{
                 onMention={props.onMention}
               />
             </Show>
-            <Show when={viewMode() === 'image' && content() && !imageTooLarge()}>
+            <Show when={!showCard() && viewMode() === 'image' && content()}>
               <ImageFileView
                 content={content()!}
                 filePath={props.filePath}
@@ -345,26 +386,12 @@ export const FileViewer: Component<{
                 onMention={props.onMention}
               />
             </Show>
-            <Show when={viewMode() === 'binary' && content()}>
-              <HexView
-                content={content()!}
-                totalSize={totalSize()}
-                topOffset={showToolbar() || showOuterMention() ? TOOLBAR_CLEARANCE_PX : 0}
-              />
-            </Show>
           </Show>
         </Show>
       </div>
-      <Show when={!loading() && !error() && !isDiffMode() && !isRefMode() && (totalSize() > 0 || isTruncated())}>
+      <Show when={!loading() && !error() && !isDiffMode() && !isRefMode() && !showCard() && totalSize() > 0}>
         <div class={styles.statusBar}>
-          <Show when={isTruncated()}>
-            <span class={styles.truncationWarning}>
-              {`Truncated at ${formatBytes(MAX_FILE_SIZE)}`}
-            </span>
-          </Show>
-          <Show when={totalSize() > 0}>
-            <span class={styles.statusMeta}>{formatBytes(totalSize())}</span>
-          </Show>
+          <span class={styles.statusMeta}>{formatBytes(totalSize())}</span>
         </div>
       </Show>
     </div>

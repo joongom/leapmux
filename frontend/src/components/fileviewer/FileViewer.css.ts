@@ -353,3 +353,137 @@ export const imageCheckerboard = style({
   backgroundSize: '16px 16px',
   border: '1px solid var(--border)',
 })
+
+// ---------------------------------------------------------------------------
+// UnsupportedFileView — GitHub-style "this file cannot be displayed" card.
+// Used for binary files, oversized text, and oversized images.
+// ---------------------------------------------------------------------------
+
+export const unsupportedWrapper = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  height: '100%',
+  width: '100%',
+  padding: 'var(--space-4)',
+  boxSizing: 'border-box',
+})
+
+export const unsupportedCard = style({
+  'boxSizing': 'border-box',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'alignItems': 'center',
+  'gap': 'var(--space-4)',
+  'maxWidth': '400px',
+  'width': '100%',
+  'padding': 'var(--space-6) var(--space-5)',
+  'border': '1px solid var(--border)',
+  'borderRadius': 'var(--radius-medium)',
+  'backgroundColor': 'var(--card)',
+  'boxShadow': 'var(--shadow-small)',
+  '@media': {
+    '(max-width: 480px)': {
+      maxWidth: '100%',
+    },
+  },
+})
+
+export const unsupportedIcon = style({
+  color: 'var(--muted-foreground)',
+  flexShrink: 0,
+})
+
+export const unsupportedHeader = style({
+  margin: 0,
+  fontSize: 'var(--text-6)',
+  fontWeight: 'var(--font-bold)',
+  color: 'var(--foreground)',
+  textAlign: 'center',
+})
+
+export const unsupportedSubtext = style({
+  margin: 0,
+  fontSize: 'var(--text-7)',
+  color: 'var(--muted-foreground)',
+  textAlign: 'center',
+})
+
+export const unsupportedFilename = style({
+  fontSize: 'var(--text-5)',
+  fontWeight: 'var(--font-bold)',
+  color: 'var(--foreground)',
+  textAlign: 'center',
+  wordBreak: 'break-all',
+})
+
+export const unsupportedSize = style({
+  fontSize: 'var(--text-7)',
+  color: 'var(--muted-foreground)',
+  textAlign: 'center',
+})
+
+export const unsupportedButtonRow = style({
+  'display': 'flex',
+  'flexDirection': 'row',
+  'gap': 'var(--space-3)',
+  'flexWrap': 'wrap',
+  'justifyContent': 'center',
+  'width': '100%',
+  '@media': {
+    '(max-width: 480px)': {
+      flexDirection: 'column',
+      flexWrap: 'nowrap',
+    },
+  },
+})
+
+const unsupportedButtonBase = style({
+  'all': 'unset',
+  'boxSizing': 'border-box',
+  'display': 'inline-flex',
+  'alignItems': 'center',
+  'justifyContent': 'center',
+  'minHeight': '44px',
+  'minWidth': '120px',
+  'paddingInline': 'var(--space-4)',
+  'borderRadius': 'var(--radius-medium)',
+  'border': '1px solid var(--border)',
+  'fontSize': 'var(--text-7)',
+  'fontWeight': 'var(--font-bold)',
+  'cursor': 'pointer',
+  'transition': 'background-color 0.1s, color 0.1s, border-color 0.1s',
+  ':focus-visible': {
+    outline: '2px solid var(--ring, var(--foreground))',
+    outlineOffset: '2px',
+  },
+  '@media': {
+    '(max-width: 480px)': {
+      width: '100%',
+      minHeight: '44px',
+    },
+  },
+})
+
+export const unsupportedPrimaryButton = style([
+  unsupportedButtonBase,
+  {
+    'backgroundColor': 'var(--foreground)',
+    'color': 'var(--background)',
+    'borderColor': 'var(--foreground)',
+    ':hover': {
+      opacity: 0.85,
+    },
+  },
+])
+
+export const unsupportedSecondaryButton = style([
+  unsupportedButtonBase,
+  {
+    'backgroundColor': 'transparent',
+    'color': 'var(--foreground)',
+    ':hover': {
+      backgroundColor: 'var(--muted, var(--accent))',
+    },
+  },
+])
