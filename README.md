@@ -8,6 +8,18 @@
 [![Container](https://img.shields.io/badge/container-ghcr.io%2Fleapmux%2Fleapmux-2496ED?logo=docker&logoColor=white)](https://github.com/leapmux/leapmux/pkgs/container/leapmux)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE.md)
 
+> ## Changes in this fork
+>
+> Modifications added on top of upstream `leapmux/leapmux`.
+>
+> - **Chat UI refresh** — openclaw-talk palette and fonts, with a flat message layout (no bubbles).
+> - **File-tree UX overhaul** — right-click context menu, size / modified-time meta columns, sort options (name ascending / most recently modified), and selection behavior where folders are never shown "selected" and deselect when expanded.
+> - **Non-renderable file viewer** — GitHub-style fallback card for files that can't be previewed.
+> - **Mobile composer** — KakaoTalk-style compact bottom composer.
+> - **iOS Safari / Add-to-Home-Screen (PWA) handling** — fixes for status-bar overlap, the composer disappearing on keyboard open/close, safe-area insets, and side-drawer shadow/dim treatment.
+>
+> ---
+
 A terminal works fine for one or two coding agents side-by-side. At three or four — one refactoring, one on tests, one chasing a failing build — shell tabs stop helping: you lose track of which one owns which branch, the agents clobber each other's working tree, and a stray tmux crash or dev-box reboot means re-launching each agent with `--resume` and rebuilding the layout by hand.
 
 LeapMux is a workspace for running several coding agents and shell terminals at once, each in a git worktree and branch you pick, tiled or floating, on a local or remote machine. Sessions stay attached across restarts, and Frontend↔Worker traffic is end-to-end encrypted. Runs in the browser or as a native desktop app.
