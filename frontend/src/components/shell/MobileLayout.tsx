@@ -74,11 +74,13 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
           {props.rightSidebarElement}
         </div>
 
-        <div class={styles.mobileCenter}>
+        <div class={styles.mobileCenter} data-mobile-center>
           <div class={styles.mobileTabBar}>
             {props.tabBarElement}
           </div>
-          {props.tileContent}
+          <div class={styles.mobileTilePaneSlot}>
+            {props.tileContent}
+          </div>
           {props.editorPanel}
         </div>
       </div>

@@ -29,6 +29,7 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useShortcuts } from '~/hooks/useShortcuts'
+import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { createIdentityCache } from '~/lib/identityCache'
@@ -179,6 +180,10 @@ export const AppShell: ParentComponent = (props) => {
     }),
   )
   setGetUserId(() => auth.user()?.id ?? '')
+
+  // Publish `--vvh` (visible viewport height in px) for mobile layout.
+  // No-op on desktop beyond a one-time write of window.innerHeight.
+  useVisualViewportInset()
 
   // Mobile layout state
   const isMobile = useIsMobile()

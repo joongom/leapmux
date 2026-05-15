@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -9,11 +10,35 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 const PUBLIC_ASSET_WARNING_RE = /\/fonts\/\S+ referenced in .+ didn't resolve at build time/
 
+// Read the current git short SHA at config-load time so it can be baked into
+// the client bundle and surfaced as `<html data-build="…">`. Lets a user on
+// a remote device (Tailscale/iPhone) verify which build they actually have.
+// Falls back to 'unknown' outside a git checkout.
+function readGitShortSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: __dirname,
+      encoding: 'utf8',
+    }).trim() || 'unknown'
+  }
+  catch {
+    return 'unknown'
+  }
+}
+const BUILD_SHA = process.env.LEAPMUX_BUILD_SHA || readGitShortSha()
+
 export default defineConfig({
   ssr: false,
   server: { static: true },
   vite: {
     build: { sourcemap: true },
+    define: {
+      // Baked into the client bundle so `MobileViewportDiag` and the
+      // `<html data-build>` attribute can surface which commit the user is
+      // actually running — kills the "is this the latest build?" debugging
+      // back-and-forth on remote devices.
+      __BUILD_SHA__: JSON.stringify(BUILD_SHA),
+    },
     plugins: [
       {
         // Workaround: vinxi passes configFile: false to Vite, so
