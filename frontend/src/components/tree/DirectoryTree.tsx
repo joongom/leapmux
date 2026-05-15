@@ -605,6 +605,11 @@ const TreeNode: Component<{
 
   const expanded = () => tree.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
+  // Whether this row should render the selected visual. Files always
+  // can; directories only in directory-picker mode (`!showFiles`) where
+  // selecting a folder is the primary action. In file-browser mode
+  // folders never look selected.
+  const showSelectedVisual = () => isSelected() && (!props.node.isDir || !tree.showFiles)
   const allChildren = () => tree.getChildren(props.node.path) ?? []
   const children = createMemo(() => {
     const all = allChildren()
@@ -693,14 +698,22 @@ const TreeNode: Component<{
     await doLoad()
     const willExpand = !expanded()
 
-    // Directory tap = expand/collapse only — no selection (ux-pass4 AC3).
-    // Selection drives the path-input + action bar; folders should not
-    // appear "active" merely because the user wanted to peek inside.
+    // Two modes, keyed off `showFiles`:
+    //  - Directory-picker mode (`showFiles === false`, e.g. the New
+    //    Agent working-dir tree): the whole point is to choose a
+    //    directory, so a folder click selects it (drives the path
+    //    input / working dir) AND toggles expand.
+    //  - File-browser mode (`showFiles === true`, the sidebar Files
+    //    section): folders only expand/collapse and never carry a
+    //    selected visual (selection is for files there).
+    if (!tree.showFiles) {
+      tree.onSelect(props.node.path)
+    }
     tree.setNodeExpanded(props.node.path, willExpand)
-    // If this folder was already selected (e.g. via path-input or external
-    // restore), expanding it clears that stale folder selection — folders
-    // never carry a selected visual.
-    if (willExpand && props.selectedPath === props.node.path) {
+    // File-browser mode only: if this folder was somehow selected (via
+    // path-input / external restore), expanding it clears that stale
+    // selection so folders never look "active" while just peeking in.
+    if (tree.showFiles && willExpand && props.selectedPath === props.node.path) {
       tree.onSelect('')
     }
     if (willExpand) {
@@ -784,7 +797,7 @@ const TreeNode: Component<{
   // so the icon does not shift horizontally on selection / deselection.
   // Directories never receive the selected class (ux-pass4 AC3), so the
   // compensation only applies to file rows.
-  const indent = () => `${8 + props.depth * 16 - (isSelected() && !props.node.isDir ? 4 : 0)}px`
+  const indent = () => `${8 + props.depth * 16 - (showSelectedVisual() ? 4 : 0)}px`
   const gitIcon = createMemo<GitIconInfo>(() => {
     const store = tree.gitStatusStore()
     if (!store)
@@ -829,7 +842,7 @@ const TreeNode: Component<{
         ref={nodeRef}
         class={styles.node}
         classList={{
-          [styles.nodeSelected]: isSelected() && !props.node.isDir,
+          [styles.nodeSelected]: showSelectedVisual(),
           [styles.nodeWrap]: wrapMode(),
         }}
         style={{
@@ -1389,9 +1402,13 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 ref={rootRowRef}
                 class={styles.node}
                 classList={{
+                  // In directory-picker mode (`!showFiles`) the root
+                  // ("~") is a valid pick, so show the selected visual.
+                  // File-browser mode keeps the root unhighlighted.
+                  [styles.nodeSelected]: !props.showFiles && props.selectedPath === rootPath(),
                   [styles.nodeWrap]: nameLayoutMode() === 'wrap',
                 }}
-                style={{ 'padding-left': '8px' }}
+                style={{ 'padding-left': (!props.showFiles && props.selectedPath === rootPath()) ? '4px' : '8px' }}
                 tabindex="0"
                 data-testid="tree-root-node"
                 onClick={() => props.onSelect(rootPath())}
