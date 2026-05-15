@@ -8,7 +8,6 @@ import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
-import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
@@ -16,7 +15,8 @@ import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore, SplitOrientation, TilePredicates } from '~/stores/layout.store'
 import type { LayoutOwner } from '~/stores/layoutOwner'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore } from '~/stores/tab.store'
+import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
@@ -39,6 +39,7 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
+import { agentTabToInfo } from '~/stores/tab.helpers'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
@@ -56,12 +57,12 @@ interface TileRendererOpts {
   /** Reactive shell stores; stable for the renderer's lifetime. */
   stores: {
     tabStore: ReturnType<typeof createTabStore>
-    agentStore: ReturnType<typeof createAgentStore>
     chatStore: ReturnType<typeof createChatStore>
     controlStore: ReturnType<typeof createControlStore>
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
     gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
+    workerInfoStore: { getHomeDir: (workerId: string) => string }
   }
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
@@ -109,8 +110,6 @@ interface TileRendererOpts {
     onDetachTab?: (tab: Tab) => void
     onAttachTab?: (tab: Tab) => void
   }
-  /** Side-effect persisting layout state to the workspace. */
-  persistLayout: () => void
   /** Settings-loading signal used by the empty-tile placeholder. */
   settingsLoading: ReturnType<typeof createLoadingSignal>
 }
@@ -118,12 +117,12 @@ interface TileRendererOpts {
 export function createTileRenderer(opts: TileRendererOpts) {
   const {
     tabStore,
-    agentStore,
     chatStore,
     controlStore,
     layoutStore,
     agentSessionStore,
     gitFileStatusStore,
+    workerInfoStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
   const {
@@ -143,7 +142,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   } = opts.newTab
   const { isMobile, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
-  const { persistLayout, settingsLoading } = opts
+  const { settingsLoading } = opts
   const floatingWindowStore = opts.floatingWindow?.store
   const onDetachTab = opts.floatingWindow?.onDetachTab
   const onAttachTab = opts.floatingWindow?.onAttachTab
@@ -162,11 +161,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const focusTile = (tileId: string) => focusTileShared(layoutStore, floatingWindowStore, tileId)
 
-  // Main-layout strategy: close the tile, scrub its tab-store records, persist.
+  // Main-layout strategy: close the tile, scrub its tab-store records.
   const removeTileFromMain = (tileId: string) => {
     layoutStore.closeTile(tileId)
     tabStore.cleanupTile(tileId)
-    persistLayout()
   }
 
   // Floating-window strategy: closeTile may dispose the entire window when
@@ -178,10 +176,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
       return
     // No-op when the window has already been auto-disposed (e.g. by
     // `useTabOperations.removeEmptyFloatingWindow` during a close-all
-    // loop). The tile-store records are already cleaned in that case;
-    // just persist so the call is idempotent against finalize re-entry.
+    // loop). The tile-store records are already cleaned in that case.
     if (!fws.getWindow(windowId)) {
-      persistLayout()
       return
     }
 
@@ -203,7 +199,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       }
       tabStore.cleanupTile(tileId)
     }
-    persistLayout()
   }
 
   const removeTileFromLayout = (tileId: string, windowId: string | null) => {
@@ -268,7 +263,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // tabs back to the main layout or close them. Lives here (not in AppShell)
   // because TileRenderer owns the close-tile / close-grid flows and the
   // floating-window close path needs the same dependencies — handleTabClose,
-  // tabStore, floatingWindowStore, persistLayout.
+  // tabStore, floatingWindowStore.
   interface ClosingFloatingWindow {
     windowId: string
   }
@@ -276,19 +271,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // Drop the floating window itself and migrate focus back to the main
   // layout if it sat on the disposed window. Idempotent against an already-
   // disposed window (useTabOperations.removeEmptyFloatingWindow may have
-  // dropped it during a close-all loop): in that case we still persist so
-  // the close-flow's finalize doesn't have to special-case the race.
+  // dropped it during a close-all loop).
   const finishCloseFloatingWindow = (windowId: string, tileIds: string[]) => {
     const fws = floatingWindowStore
-    if (!fws)
+    if (!fws || !fws.getWindow(windowId))
       return
-    if (!fws.getWindow(windowId)) {
-      persistLayout()
-      return
-    }
     fws.removeWindow(windowId)
     cleanupAfterWindowDisposal(layoutStore, tabStore, tileIds)
-    persistLayout()
   }
 
   const closeFloatingWindowFlow = createCloseFlow<ClosingFloatingWindow>({
@@ -300,8 +289,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
       // Snapshot the tile-id list — the source set is invalidated mid-loop
       // by removeIfEmpty auto-cleanup inside handleTabClose.
       const tileIds = [...fws.getWindowTileIdSet(ctx.windowId) ?? []]
+      const tabs = collectTabsFromTiles(tileIds)
       return closePlanWithDispose({
-        tabs: collectTabsFromTiles(tileIds),
+        tabs,
         merge: () => {
           const targetTileId = layoutStore.owner().firstLeafId()
           if (targetTileId) {
@@ -351,12 +341,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const splitTile = (tileId: string, direction: SplitOrientation) => {
     ownerOf(tileId).splitTile(tileId, direction)
-    persistLayout()
   }
 
   const makeGrid = (tileId: string, rows: number, cols: number) => {
     ownerOf(tileId).makeGrid(tileId, rows, cols)
-    persistLayout()
   }
 
   // Close-grid dialog state. `ownerTileId` is the tile that triggered the
@@ -381,12 +369,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
           const newTileId = owner.replaceGridWithLeaf(ctx.gridId)
           if (newTileId)
             tabStore.reassignTabsToTile(tileIds, newTileId)
-          persistLayout()
         },
         finalize: () => {
           owner.removeGrid(ctx.gridId)
           tabStore.cleanupTiles(tileIds)
-          persistLayout()
         },
       }
     },
@@ -426,7 +412,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   }
 
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
-    agentStore.getById(agentId),
+    agentTabToInfo(tabStore.getAgentTab(agentId)),
     agentSessionStore.getInfo(agentId),
     chatStore.getMessages(agentId),
     chatStore.state.streamingText[agentId],
@@ -457,7 +443,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onRename={(tab, title) => {
           tabStore.updateTabTitle(tab.type, tab.id, title)
           if (tab.type === TabType.AGENT) {
-            const renameWorkerId = agentStore.getById(tab.id)?.workerId ?? ''
+            const renameWorkerId = tabStore.getAgentTab(tab.id)?.workerId ?? ''
             workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
               showWarnToast('Failed to rename agent', err)
             })
@@ -491,9 +477,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const tabBarElement = () => createTabBarForTile(layoutStore.focusedTileId())
 
   const TileTerminalPane: Component<{
-    terminals: Tab[]
+    terminals: TerminalTab[]
     activeTerminalId: string | null
     visible: boolean
+    tileFocused: boolean
   }> = (props) => {
     let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
     let terminalWrite: ((data: string) => void) | undefined
@@ -524,6 +511,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           terminals={props.terminals}
           activeTerminalId={props.activeTerminalId}
           visible={props.visible}
+          tileFocused={props.tileFocused}
           onInput={termOps.handleTerminalInput}
           onResize={termOps.handleTerminalResize}
           onTitleChange={termOps.handleTerminalTitleChange}
@@ -563,9 +551,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // below. The source `getTabsForTile` is itself memoised, so this memo only
     // re-runs when something in the tile actually changed.
     const tabsByType = createMemo(() => {
-      const agent: Tab[] = []
-      const file: Tab[] = []
-      const terminal: Tab[] = []
+      const agent: AgentTab[] = []
+      const file: FileTab[] = []
+      const terminal: TerminalTab[] = []
       for (const t of tabStore.getTabsForTile(tileId)) {
         if (t.type === TabType.AGENT)
           agent.push(t)
@@ -595,7 +583,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         <For each={tileAgentTabs()}>
           {(at) => {
             const agentId = at.id
-            const agent = createMemo(() => agentStore.getById(agentId))
+            const agent = createMemo(() => tabStore.getAgentTab(agentId))
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
@@ -608,6 +596,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   fallback={<div class={styles.placeholder}>Agent not found.</div>}
                 >
                   <ChatView
+                    agentId={agentId}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
@@ -619,7 +608,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
                     workingDir={agent()?.workingDir}
-                    homeDir={agent()?.homeDir}
+                    homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
                     fetchingOlder={chatStore.isFetchingOlder(agentId)}
                     onLoadOlderMessages={() => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId)}
@@ -654,7 +643,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                           appendText(agentId, text)
                           focusEditorRef()?.()
                         }}
-                    agentStatus={agent()?.status}
+                    agentStatus={agent()?.agentStatus}
                     startupError={agent()?.startupError}
                     startupMessage={agent()?.startupMessage}
                     providerLabel={agentProviderLabel(agent()?.agentProvider)}
@@ -670,6 +659,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             terminals={tileTerminals()}
             activeTerminalId={terminalTab()?.id ?? null}
             visible={!!terminalTab()}
+            tileFocused={layoutStore.focusedTileId() === tileId}
           />
         </Show>
 
@@ -779,15 +769,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return (
       <AgentEditorPanel
         agentId={agentId()}
-        agent={agentStore.getById(agentId())}
+        agent={agentTabToInfo(tabStore.getAgentTab(agentId()))}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()
           if (!id)
             return
           forceScrollToBottomRef()?.()
-          const sendAgent = agentStore.getById(id)
-          const status = sendAgent?.status
+          const sendAgent = tabStore.getAgentTab(id)
+          const status = sendAgent?.agentStatus
 
           // Build optimistic message JSON with attachment data so retry can
           // recover the binary content without re-uploading.
@@ -924,9 +914,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
           const tab = activeTab()
           if (tab) {
             tabStore.setActiveTab(tab.type, tab.id)
-            if (tab.type === TabType.AGENT) {
-              agentStore.setActiveAgent(tab.id)
-            }
           }
         }}
         pop={pop()}
@@ -974,7 +961,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
         return true
       return controlStore.getRequests(agentId).length > 0
     },
-    requestCloseFloatingWindow: (windowId: string) => closeFloatingWindowFlow.request({ windowId }),
+    requestCloseFloatingWindow: (windowId: string) => {
+      closeFloatingWindowFlow.request({ windowId })
+    },
     /**
      * Render the close-grid / close-tile / close-floating-window confirmation
      * dialogs. The parent layout component must include this in its tree so

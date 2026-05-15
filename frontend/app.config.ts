@@ -178,6 +178,7 @@ export default defineConfig({
         'diff',
         'fracturedjsonjs',
         'fzstd',
+        'nanoid',
         'random-word-slugs',
         'tinykeys',
       ],

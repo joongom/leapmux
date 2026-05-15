@@ -44,6 +44,12 @@ export interface ChatScrollApi {
 }
 
 interface ChatViewProps {
+  /**
+   * Stable agent id. Forwarded to ThinkingIndicator so the random
+   * spinner verb persists across re-mounts caused by layout-tree
+   * restructures (tile split / make-grid / close-grid).
+   */
+  agentId?: string
   messages: AgentChatMessage[]
   streamingText: string
   /** Whether the agent is actively working (for showing the thinking indicator). */
@@ -399,6 +405,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   </Show>
                 </Show>
                 <ThinkingIndicator
+                  id={props.agentId}
                   visible={props.agentWorking ?? false}
                   paused={props.tabActive === false}
                   onExpandTick={() => {
