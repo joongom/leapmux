@@ -10,7 +10,7 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { createStore } from 'solid-js/store'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
-import { useIsMobile } from '~/hooks/useIsMobile'
+import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { INITIAL_ACTIVE_FORMATTING } from '~/lib/editor/toolbarState'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
@@ -82,7 +82,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorInstance: Editor | undefined
   const preferences = usePreferences()
   const enterMode = preferences.enterKeyMode
-  const isMobile = useIsMobile()
+  const isMobile = useIsMobileLayout()
   const [_markdown, setMarkdown] = createSignal('')
   const [contentHeight, setContentHeight] = createSignal(0)
 

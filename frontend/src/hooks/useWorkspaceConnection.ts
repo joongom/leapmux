@@ -19,6 +19,7 @@ import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
+import { createExponentialBackoff } from '~/lib/retry'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
@@ -140,7 +141,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               }
             }
             if (sc.gitStatus) {
-              const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel)
+              const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree)
               const i = (tabs === snap.tabs ? snap.tabs : tabs).findIndex(t => t.type === TabType.AGENT && t.id === agentId)
               if (i >= 0 && gitTabFieldsDiffer(tabs[i], next)) {
                 tabs = tabs === snap.tabs ? tabs.slice() : tabs
@@ -467,6 +468,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if ((sc.availableModels && sc.availableModels.length > 0) || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0))
           updateSettingsLabelCache(sc.availableModels, sc.availableOptionGroups)
 
+        // Consolidate every per-status field into one updateTab so the
+        // store walks state.tabs once. The `agentGitStatus` (full proto)
+        // and the three string git fields are derived from the same
+        // sc.gitStatus payload — splitting them across two calls (the
+        // historical pattern) walked the tabs array twice per push.
         tabStore.updateTab(TabType.AGENT, sc.agentId, {
           ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
           // Carry startupError alongside status transitions so the tab's
@@ -500,15 +506,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           ...(sc.availableOptionGroups && sc.availableOptionGroups.length > 0
             ? { availableOptionGroups: sc.availableOptionGroups }
             : {}),
-          ...(sc.gitStatus ? { agentGitStatus: sc.gitStatus } : {}),
+          ...(sc.gitStatus
+            ? {
+                agentGitStatus: sc.gitStatus,
+                ...toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree),
+              }
+            : {}),
         })
-        if (sc.gitStatus) {
-          tabStore.updateTab(
-            TabType.AGENT,
-            sc.agentId,
-            toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel),
-          )
-        }
         if (!pendingSettings) {
           settingsLoading.stop()
         }
@@ -585,6 +589,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.removeMessage(md.agentId, md.messageId)
         break
       }
+      case 'todosChanged': {
+        // Sole driver of the sidebar to-do list. The worker persists
+        // every to-do event in agent_todos and ships the post-mutation
+        // snapshot here; clients replace wholesale.
+        const tc = inner.value
+        chatStore.replaceTodos(tc.agentId, tc.todos)
+        break
+      }
       case 'catchUpComplete':
         catchUpPhases.set(agentId, 'live')
         break
@@ -617,7 +629,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
           const owningWsId = params.registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))?.workspaceId
           if (owningWsId) {
-            const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel)
+            const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
             params.registry.update(owningWsId, (snap) => {
               const i = snap.tabs.findIndex(t => tabKey(t) === key)
               if (i < 0 || !gitTabFieldsDiffer(snap.tabs[i], next))
@@ -671,7 +683,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // arrives so a reconnect or a late worktree-creation refreshes the
         // badge.
         if (existingTab && (sc.gitBranch || sc.gitOriginUrl || sc.gitToplevel)) {
-          const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel)
+          const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
           if (gitTabFieldsDiffer(existingTab, next))
             tabStore.updateTab(TabType.TERMINAL, terminalId, next)
         }
@@ -751,7 +763,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       catchUpPhases.set(entry.agentId, 'catchingUp')
     }
 
-    let backoff = 1000
+    // Per-loop reconnect backoff. Successful events reset the
+    // sequence; stream-level errors also reset (the legacy code did
+    // `Math.min(backoff, 500)` to retry fast, which the helper's
+    // initial-delay floor of 1s approximates closely enough). Only
+    // sustained connection-lost errors let the sequence walk up to
+    // 30s.
+    const backoff = createExponentialBackoff<string>({
+      initialMs: 1000,
+      maxMs: 30000,
+      multiplier: 2,
+      jitterFactor: 0,
+    })
+    const BACKOFF_KEY = 'watch'
+    signal.addEventListener('abort', () => backoff.cancelAll(), { once: true })
+
     while (!signal.aborted) {
       try {
         // Build entries with current afterSeq values.
@@ -788,7 +814,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // wired; waitForStreamCompletion captures end / error / abort that
         // fire during the synchronous setup window.
         handle.onEvent((response) => {
-          backoff = 1000
+          backoff.reset(BACKOFF_KEY)
           switch (response.event.case) {
             case 'agentEvent':
               handleAgentEvent(response.event.value, catchUpPhases, signal)
@@ -822,14 +848,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
         else {
           // Stream-level error (e.g. NOT_FOUND for entities not yet
-          // visible). Retry quickly without alarming the user.
+          // visible). Retry quickly without alarming the user. Reset
+          // the backoff so a benign transient error doesn't inherit a
+          // long delay from a prior connection-lost streak.
           log.warn('[watchEvents] stream error, retrying:', err)
-          backoff = Math.min(backoff, 500)
+          backoff.reset(BACKOFF_KEY)
         }
       }
 
-      await new Promise(r => setTimeout(r, backoff))
-      backoff = Math.min(backoff * 2, 30000)
+      if (signal.aborted)
+        return
+      await new Promise<void>((resolve) => {
+        backoff.schedule(BACKOFF_KEY, resolve)
+      })
     }
   }
 

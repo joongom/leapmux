@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -43,9 +44,8 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	branchName := "feature/agent-worktree"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced start failure")
 	}
@@ -82,9 +82,8 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/agent-branch"
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced start failure")
 	}
@@ -111,9 +110,8 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 	run(t, repoDir, "git", "checkout", "--detach", "HEAD")
 	branchName := "feature/detached-rollback"
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced start failure")
 	}
@@ -141,7 +139,7 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	branchName := "feature/terminal-worktree"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("forced start failure")
@@ -173,7 +171,7 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/terminal-branch"
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("forced start failure")
@@ -207,13 +205,13 @@ func currentBranchName(t *testing.T, repoDir string) string {
 
 func localBranchExists(t *testing.T, repoDir, branchName string) bool {
 	t.Helper()
-	_, err := gitOutput(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/"+branchName)
+	_, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/"+branchName)
 	return err == nil
 }
 
 func mustGitOutput(t *testing.T, ctx context.Context, repoDir string, args ...string) string {
 	t.Helper()
-	out, err := gitOutput(ctx, repoDir, args...)
+	out, err := gitutil.Output(ctx, repoDir, args...)
 	require.NoError(t, err)
 	return out
 }
@@ -229,9 +227,8 @@ func TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure(t *testing.T) {
 	branchName := "feature/agent-create-failure"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.createAgentRecordFn = func(context.Context, db.CreateAgentParams) error {
 		return errors.New("forced create failure")
 	}
@@ -260,9 +257,8 @@ func TestOpenAgent_NoBranchMutationOnCreateRecordFailure(t *testing.T) {
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/agent-create-branch"
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.createAgentRecordFn = func(context.Context, db.CreateAgentParams) error {
 		return errors.New("forced create failure")
 	}
@@ -284,7 +280,7 @@ func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-b", "feature/existing")
 	run(t, repoDir, "git", "checkout", "-")
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("forced start failure")

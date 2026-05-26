@@ -6,10 +6,19 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { loadBrowserPrefs } from './browserStorage'
+import { copyTextToClipboard } from './clipboard'
 import { createLogger } from './logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 const log = createLogger('terminal')
+
+// Default PTY dimensions used by OpenTerminal / RestartTerminal callers
+// when no measured size is available yet (new-terminal dialog before
+// xterm mount, or a restart on a tab whose ResizeObserver hasn't
+// reported dims). Kept in this module so the openTerminal call sites
+// and the restart fallback share a single source of truth.
+export const DEFAULT_TERMINAL_COLS = 80
+export const DEFAULT_TERMINAL_ROWS = 25
 
 export type TerminalThemePreference = 'light' | 'dark' | 'match-ui'
 type ResolvedTerminalRenderer = 'webgl' | 'canvas'
@@ -299,7 +308,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   // (e.g. a click that clears highlight) are skipped so we don't
   // clobber whatever the user has on the clipboard.
   terminal.onSelectionChange(() => {
-    copySelectionToClipboard(terminal.getSelection())
+    copyTextToClipboard(terminal.getSelection())
   })
 
   return {
@@ -376,18 +385,4 @@ function clearAtlas(terminal: Terminal): void {
   catch {
     // Terminal was disposed before fonts settled; nothing to do.
   }
-}
-
-/**
- * Write `text` to the system clipboard, ignoring empty inputs and
- * environments without a clipboard API. Errors (e.g. permission denied
- * on a non-secure context) are swallowed — auto-copy is a convenience,
- * not a contract.
- */
-export function copySelectionToClipboard(text: string): void {
-  if (text.length === 0)
-    return
-  if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText)
-    return
-  void navigator.clipboard.writeText(text).catch(() => {})
 }

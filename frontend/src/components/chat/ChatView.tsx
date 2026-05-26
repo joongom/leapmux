@@ -4,20 +4,19 @@ import type { ChatScrollState } from './useChatScroll'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
-import { spinner } from '~/styles/animations.css'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
@@ -101,6 +100,8 @@ interface ChatViewProps {
   getToolResultParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
   /** Look up live Codex span stream segments by span id. */
   getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
+  /** O(1) live-todo lookup for this view's agent (forwarded to renderers like the Claude Task card). */
+  getTodoById?: (taskId: string) => TodoItem | undefined
   /**
    * Agent status. STARTING shows a loader with the provider name in
    * the empty-state area; STARTUP_FAILED shows the server error in
@@ -321,7 +322,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           >
             <Show when={props.fetchingOlder}>
               <div class={styles.loadingOlderIndicator}>
-                <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                <Spinner />
                 Loading older messages...
               </div>
             </Show>
@@ -352,6 +353,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         homeDir={props.homeDir}
                         onReply={props.onReply}
                         host={{
+                          getTodoById: props.getTodoById,
                           getToolUseParsedBySpanId: props.getToolUseParsedBySpanId,
                           getToolResultParsedBySpanId: props.getToolResultParsedBySpanId,
                           commandStream: () => props.getCommandStreamBySpanId?.(msg.spanId),

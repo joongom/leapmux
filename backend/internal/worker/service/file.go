@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,7 +29,7 @@ const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
 func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
-	d.Register("ListDirectory", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListDirectory", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListDirectoryRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -58,7 +59,7 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("ReadFile", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ReadFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ReadFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -100,17 +101,31 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 		totalSize := info.Size()
 
 		offset := r.GetOffset()
+		limit := r.GetLimit()
+		if limit <= 0 {
+			limit = defaultReadLimit
+		}
+
+		// meta_only_if_truncated: when the file would be truncated by the
+		// read window, return total_size with an empty content payload so
+		// callers can detect oversize files (e.g. images we won't preview)
+		// without paying for the bytes. Lets the file viewer collapse a
+		// StatFile + ReadFile pair into one round trip.
+		if r.GetMetaOnlyIfTruncated() && totalSize > offset+limit {
+			sendProtoResponse(sender, &leapmuxv1.ReadFileResponse{
+				Path:      filePath,
+				Content:   nil,
+				TotalSize: totalSize,
+			})
+			return
+		}
+
 		if offset > 0 {
 			if _, err := f.Seek(offset, io.SeekStart); err != nil {
 				slog.Error("failed to seek file", "path", filePath, "offset", offset, "error", err)
 				sendInternalError(sender, "failed to seek file")
 				return
 			}
-		}
-
-		limit := r.GetLimit()
-		if limit <= 0 {
-			limit = defaultReadLimit
 		}
 
 		buf := make([]byte, limit)
@@ -128,7 +143,7 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("StatFile", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("StatFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.StatFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

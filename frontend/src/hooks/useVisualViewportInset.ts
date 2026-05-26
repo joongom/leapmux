@@ -1,10 +1,9 @@
 import { onCleanup, onMount } from 'solid-js'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
 
 /**
  * Bridge `window.visualViewport` state into two CSS custom properties
- * that `global.css.ts` consumes for the iOS standalone PWA layout
- * (see `docs/specs/pwa-standalone-safe-area.md` for the full
- * rationale and references):
+ * that `global.css.ts` consumes for the iOS standalone PWA layout:
  *
  *   --vvh        `visualViewport.height` (px), published **only**
  *                while an editable element is focused. Consumers that
@@ -42,36 +41,40 @@ export function useVisualViewportInset() {
     return
 
   onMount(() => {
-    let rafId: number | null = null
     let editableFocused = isEditable(document.activeElement)
+    // Skip redundant DOM writes: iOS Safari fires `visualViewport.scroll`
+    // continuously during address-bar / keyboard animation, and most
+    // ticks produce the same px value. Empty string = "currently unset".
+    let lastVvh = ''
+    let lastOffset = ''
 
     const apply = () => {
-      rafId = null
       const root = document.documentElement
       const vv = window.visualViewport
 
-      if (editableFocused && vv) {
-        root.style.setProperty('--vvh', `${vv.height}px`)
-      }
-      else {
-        root.style.removeProperty('--vvh')
+      const nextVvh = editableFocused && vv ? `${vv.height}px` : ''
+      if (nextVvh !== lastVvh) {
+        if (nextVvh)
+          root.style.setProperty('--vvh', nextVvh)
+        else
+          root.style.removeProperty('--vvh')
+        lastVvh = nextVvh
       }
 
       // Sub-pixel jitter (e.g. 0.333 after a scroll) is ignored.
       const offsetTop = vv?.offsetTop ?? 0
-      if (!editableFocused && offsetTop > 0.5) {
-        root.style.setProperty('--vv-offset', `${offsetTop}px`)
-      }
-      else {
-        root.style.removeProperty('--vv-offset')
+      const nextOffset = !editableFocused && offsetTop > 0.5 ? `${offsetTop}px` : ''
+      if (nextOffset !== lastOffset) {
+        if (nextOffset)
+          root.style.setProperty('--vv-offset', nextOffset)
+        else
+          root.style.removeProperty('--vv-offset')
+        lastOffset = nextOffset
       }
     }
 
-    const schedule = () => {
-      if (rafId !== null)
-        return
-      rafId = requestAnimationFrame(apply)
-    }
+    const coalescer = createRafCoalescer<void>(apply)
+    const schedule = () => coalescer.push()
 
     const onFocusIn = (e: FocusEvent) => {
       if (isEditable(e.target as Element | null)) {
@@ -120,10 +123,7 @@ export function useVisualViewportInset() {
       window.removeEventListener('pageshow', schedule)
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('focusout', onFocusOut)
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId)
-        rafId = null
-      }
+      coalescer.abort()
       // Remove the custom properties so test environments are isolated.
       // In production unmount is effectively unload, so this is a no-op.
       document.documentElement.style.removeProperty('--vvh')

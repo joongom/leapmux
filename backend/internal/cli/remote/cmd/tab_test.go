@@ -93,9 +93,7 @@ func TestTerminalInfoToMap_ScreenEmittedAsString(t *testing.T) {
 // invalid_request rather than silently shipping a zero-byte write to
 // the PTY. Mirrors TestRunAgentSend_RequiresMessageOrStdin.
 func TestRunTerminalSend_RequiresDataOrStdin(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_ID", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_TYPE", "")
+	clearRemoteEnv(t)
 	out := withCapturedStdout(t, func() {
 		err := RunTerminalSend(fakeCmdCtx{}, []string{"--hub", "https://stub", "--tab-id", "term-1"})
 		require.Error(t, err)
@@ -465,13 +463,15 @@ func TestTabCloseWorktree_WorktreeAction(t *testing.T) {
 // discard without re-running inspect manually.
 func TestLastTabPromptMessage_WorktreeWithDirty(t *testing.T) {
 	msg := lastTabPromptMessage(&leapmuxv1.InspectLastTabCloseResponse{
-		Target:                leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
-		WorktreePath:          "/repo/wt-foo",
-		HasUncommittedChanges: true,
-		DiffAdded:             3,
-		DiffDeleted:           1,
-		DiffUntracked:         2,
-		UnpushedCommitCount:   2,
+		Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+		WorktreePath: "/repo/wt-foo",
+		GitState: &leapmuxv1.BranchGitState{
+			HasUncommittedChanges: true,
+			DiffAdded:             3,
+			DiffDeleted:           1,
+			DiffUntracked:         2,
+			UnpushedCommitCount:   2,
+		},
 	})
 	assert.Contains(t, msg, "/repo/wt-foo")
 	assert.Contains(t, msg, "3 added / 1 deleted / 2 untracked")
@@ -483,9 +483,9 @@ func TestLastTabPromptMessage_WorktreeWithDirty(t *testing.T) {
 // count correctly. Mirrors the frontend dialog's `pluralize` call.
 func TestLastTabPromptMessage_BranchUnpushedSingular(t *testing.T) {
 	msg := lastTabPromptMessage(&leapmuxv1.InspectLastTabCloseResponse{
-		Target:              leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH,
-		BranchName:          "feat-x",
-		UnpushedCommitCount: 1,
+		Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH,
+		BranchName: "feat-x",
+		GitState:   &leapmuxv1.BranchGitState{UnpushedCommitCount: 1},
 	})
 	assert.Contains(t, msg, "feat-x")
 	assert.Contains(t, msg, "1 unpushed commit")

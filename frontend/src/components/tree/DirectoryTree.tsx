@@ -24,7 +24,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
-import { useIsMobile } from '~/hooks/useIsMobile'
+import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { downloadFileFromWorker, openFileInNewTab } from '~/lib/fileDownload'
 import { formatBytes } from '~/lib/formatBytes'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
@@ -596,7 +596,7 @@ const TreeNode: Component<{
   depth: number
 }> = (props) => {
   const tree = useTree()
-  const isMobile = useIsMobile()
+  const isMobile = useIsMobileLayout()
   const [loading, setLoading] = createSignal(false)
   let wrapperRef!: HTMLDivElement
   let nodeRef!: HTMLDivElement
@@ -939,7 +939,7 @@ const TreeNode: Component<{
 }
 
 export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
-  const isMobile = useIsMobile()
+  const isMobile = useIsMobileLayout()
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [inputValue, setInputValue] = createSignal('')

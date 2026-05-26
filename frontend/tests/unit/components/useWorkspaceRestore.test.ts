@@ -2,11 +2,11 @@ import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceRestore } from '~/components/shell/useWorkspaceRestore'
-import { EXPANDED_WORKSPACES_KEY } from '~/components/workspace/expandedWorkspaces'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { HLCSchema, LWWStringSchema, TabRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge, project, setCRDTBridge } from '~/lib/crdt'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -72,10 +72,7 @@ async function flushEffects(): Promise<void> {
 
 describe('useWorkspaceRestore sibling pre-fetch', () => {
   it('fires onExpandWorkspace for every expanded sibling in the same tick as the active ListTabs', async () => {
-    sessionStorage.setItem(
-      EXPANDED_WORKSPACES_KEY,
-      JSON.stringify(['active-ws', 'sib-1', 'sib-2']),
-    )
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['active-ws', 'sib-1', 'sib-2'])
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
     const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
@@ -107,7 +104,7 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
   })
 
   it('does not fire onExpandWorkspace when the active workspace is restored from cache', async () => {
-    sessionStorage.setItem(EXPANDED_WORKSPACES_KEY, JSON.stringify(['active-ws', 'sib-1']))
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['active-ws', 'sib-1'])
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
     const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
@@ -261,6 +258,105 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
     expect(mockListTerminals).not.toHaveBeenCalled()
 
     dispose()
+  })
+
+  // Per-worker retry slot cleanup. When a worker disappears from the
+  // missing-tabs map (its tabs were closed, it disconnected, or every
+  // pending tab hydrated), the next failure on the same worker id must
+  // restart the backoff at `initialMs` — not resume mid-sequence from
+  // a stale `lastBaseDelays` entry the helper would otherwise keep
+  // until unmount. Verified by pinning Math.random so the un-jittered
+  // base equals the scheduled delay, then comparing arm-times across
+  // a dropout cycle.
+  it('resets per-worker retry state when a worker drops out of the candidate map', async () => {
+    vi.useFakeTimers()
+    // Pin jitter to its symmetric midpoint so scheduled delays match
+    // the un-jittered base (500ms → 1000ms → …) exactly.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    try {
+      mockListTerminals.mockReset()
+      // Every call rejects → every effect run schedules a retry.
+      mockListTerminals.mockRejectedValue(new Error('worker unavailable'))
+
+      const opts = makeBaseOpts()
+      const workerId = 'flaky-worker'
+      opts.registry.set('active-ws', {
+        workspaceId: 'active-ws',
+        tabs: [{
+          type: TabType.TERMINAL,
+          id: 'term-1',
+          workerId,
+          status: TerminalStatus.READY,
+        }],
+        activeTabKey: null,
+        layout: { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
+        restored: true,
+        tabsLoaded: true,
+      })
+
+      const [activeId, setActiveId] = createSignal<string | null>(null)
+      const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+
+      const dispose = createRoot((dispose) => {
+        useWorkspaceRestore({
+          ...opts,
+          getActiveWorkspaceId: activeId,
+          getOrgId: orgId,
+        })
+        setActiveId('active-ws')
+        setOrgId('org-1')
+        return dispose
+      })
+
+      // First effect tick: one listTerminals fire, fails, retry armed.
+      await flushEffects()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+
+      // Advance just past the first retry delay (500ms). The retry
+      // bumps the tick → effect runs again → second listTerminals →
+      // rejects → next retry armed at 1000ms.
+      await vi.advanceTimersByTimeAsync(500)
+      expect(mockListTerminals).toHaveBeenCalledTimes(2)
+
+      // Worker drops out: close the only tab that needs hydration.
+      // `tabsNeedingHydration` now returns an empty map for this
+      // worker, and the effect's keyset-diff must call `reset` for it.
+      opts.tabStore.removeTab(TabType.TERMINAL, 'term-1')
+      await flushEffects()
+
+      // Re-introduce a tab on the same worker, still un-hydrated. The
+      // effect fires immediately (candidate map changed) and the third
+      // listTerminals call rejects.
+      mockListTerminals.mockClear()
+      opts.tabStore.addTab({
+        type: TabType.TERMINAL,
+        id: 'term-2',
+        workerId,
+        status: TerminalStatus.READY,
+      })
+      await flushEffects()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+      mockListTerminals.mockClear()
+
+      // The retry slot was reset, so the next retry must fire at
+      // 500ms — NOT 2000ms (which would be the un-reset doubled value
+      // after 500ms → 1000ms → 2000ms). Tick at 499ms: no fire yet.
+      // Tick at 501ms: the retry must have fired, re-running the
+      // effect → fourth listTerminals call.
+      await vi.advanceTimersByTimeAsync(499)
+      expect(mockListTerminals).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(2)
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+
+      dispose()
+    }
+    finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
   })
 
   // Mixed fixture: two tabs on the same worker, one fully hydrated and

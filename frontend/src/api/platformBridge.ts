@@ -1,8 +1,9 @@
+import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
-import type { BuildInfo } from '~/lib/systemInfo'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
+import { isMac } from '~/lib/shortcuts/platform'
 
 export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distributed' | 'tauri-mobile-distributed'
 
@@ -80,6 +81,83 @@ export interface DetectedEditor {
   displayName: string
 }
 
+// Tagged unions the UI consumes. Mirror CliPathStatusResponse and
+// CliInstallSymlinkResponse in proto/leapmux/desktop/v1/frame.proto.
+export type CliPathTargetKind = 'absent' | 'symlink' | 'regular_file' | 'unknown'
+
+export type CliPathStatus
+  = | { state: 'ok', bundled: string }
+    | { state: 'missing', bundled: string, target: string, targetKind: CliPathTargetKind }
+    | { state: 'mismatch', bundled: string, resolved: string, targetKind: CliPathTargetKind }
+    | { state: 'unavailable' }
+
+export type CliInstallResult
+  = | { result: 'ok' }
+    | { result: 'needs_sudo', command: string }
+    | { result: 'already_exists_real_file', path: string }
+    | { result: 'parent_missing', path: string, command: string }
+    | { result: 'io_error', message: string }
+
+interface CliPathStatusPayload {
+  state: number
+  bundled: string
+  resolved: string
+  target: string
+  targetKind: number
+}
+
+interface CliInstallSymlinkPayload {
+  result: number
+  command: string
+  path: string
+  message: string
+}
+
+// Numeric codes mirror the proto enums in frame.proto. The Tauri commands
+// return raw i32 (prost-generated enums aren't serde-Serialize), so we
+// translate here once at the boundary.
+const PathState = { OK: 1, MISSING: 2, MISMATCH: 3 } as const
+const TargetKind = { ABSENT: 1, SYMLINK: 2, REGULAR_FILE: 3 } as const
+const InstallResultCode = {
+  OK: 1,
+  NEEDS_SUDO: 2,
+  ALREADY_EXISTS_REAL_FILE: 3,
+  PARENT_MISSING: 4,
+  IO_ERROR: 5,
+} as const
+
+function decodeTargetKind(n: number): CliPathTargetKind {
+  switch (n) {
+    case TargetKind.ABSENT: return 'absent'
+    case TargetKind.SYMLINK: return 'symlink'
+    case TargetKind.REGULAR_FILE: return 'regular_file'
+    // UNSPECIFIED (0) or any unknown value collapses to 'unknown' so the
+    // dialog defaults to the safer two-click danger button — a permission
+    // error reading the target shouldn't silently downgrade.
+    default: return 'unknown'
+  }
+}
+
+function decodeCliPathStatus(p: CliPathStatusPayload): CliPathStatus {
+  switch (p.state) {
+    case PathState.OK: return { state: 'ok', bundled: p.bundled }
+    case PathState.MISSING: return { state: 'missing', bundled: p.bundled, target: p.target, targetKind: decodeTargetKind(p.targetKind) }
+    case PathState.MISMATCH: return { state: 'mismatch', bundled: p.bundled, resolved: p.resolved, targetKind: decodeTargetKind(p.targetKind) }
+    default: return { state: 'unavailable' }
+  }
+}
+
+function decodeCliInstallResult(p: CliInstallSymlinkPayload): CliInstallResult {
+  switch (p.result) {
+    case InstallResultCode.OK: return { result: 'ok' }
+    case InstallResultCode.NEEDS_SUDO: return { result: 'needs_sudo', command: p.command }
+    case InstallResultCode.ALREADY_EXISTS_REAL_FILE: return { result: 'already_exists_real_file', path: p.path }
+    case InstallResultCode.PARENT_MISSING: return { result: 'parent_missing', path: p.path, command: p.command }
+    case InstallResultCode.IO_ERROR: return { result: 'io_error', message: p.message }
+    default: return { result: 'io_error', message: p.message || 'unknown sidecar response' }
+  }
+}
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown
@@ -153,6 +231,7 @@ let cachedTauriEvents: Promise<typeof import('@tauri-apps/api/event')> | null = 
 let cachedTauriDpi: Promise<typeof import('@tauri-apps/api/dpi')> | null = null
 let cachedTauriWindow: Promise<typeof import('@tauri-apps/api/window')> | null = null
 let cachedTauriClipboard: Promise<typeof import('@tauri-apps/plugin-clipboard-manager')> | null = null
+let cachedTauriOpener: Promise<typeof import('@tauri-apps/plugin-opener')> | null = null
 
 function loadTauriCore() {
   return (cachedTauriCore ??= import('@tauri-apps/api/core'))
@@ -174,9 +253,17 @@ function loadTauriClipboard() {
   return (cachedTauriClipboard ??= import('@tauri-apps/plugin-clipboard-manager'))
 }
 
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+function loadTauriOpener() {
+  return (cachedTauriOpener ??= import('@tauri-apps/plugin-opener'))
+}
+
+async function tauriInvoke<T>(
+  cmd: string,
+  args?: import('@tauri-apps/api/core').InvokeArgs,
+  options?: import('@tauri-apps/api/core').InvokeOptions,
+): Promise<T> {
   const { invoke } = await loadTauriCore()
-  return invoke<T>(cmd, args)
+  return invoke<T>(cmd, args, options)
 }
 
 export function resetPlatformRuntimeState(): void {
@@ -392,6 +479,98 @@ export async function readClipboardImage(): Promise<File | null> {
   }
 }
 
+/**
+ * Streaming save handle returned by `fileSaveOpen` / `fileSaveOpenDialog`.
+ * `id` is the Rust-side registry id (a monotonic u64); `path` is the
+ * absolute path that was opened so callers can pass it to
+ * `revealInFileManager` after a successful close.
+ */
+export interface SaveStreamHandle {
+  id: number
+  path: string
+}
+
+/**
+ * Open a destination file under the OS Downloads directory and return
+ * a streaming handle. The Rust side keeps the `File` open between
+ * calls; the caller streams bytes through `fileSaveWrite` and finalizes
+ * with `fileSaveCommit` (or `fileSaveAbort` on failure).
+ *
+ * The Rust command sanitizes `filename` to its basename so callers can't
+ * escape the Downloads dir. The filename rides through a header,
+ * base64-encoded so non-ASCII names survive the HTTP-style header
+ * value restrictions.
+ */
+export async function fileSaveOpen(filename: string): Promise<SaveStreamHandle> {
+  return tauriInvoke<SaveStreamHandle>('file_save_open', undefined, {
+    headers: { 'filename-b64': arrayBufferToBase64(filename) },
+  })
+}
+
+/**
+ * Show a native save-as dialog, open the chosen path, and return a
+ * streaming handle. Returns `null` if the user cancelled the dialog —
+ * callers should short-circuit before any worker fetch so a cancelled
+ * save doesn't pay the full read cost. Tauri-only.
+ */
+export async function fileSaveOpenDialog(defaultName: string): Promise<SaveStreamHandle | null> {
+  return tauriInvoke<SaveStreamHandle | null>('file_save_open_dialog', undefined, {
+    headers: { 'default-name-b64': arrayBufferToBase64(defaultName) },
+  })
+}
+
+/**
+ * Append `chunk` to the file identified by `id`. Bytes ride the Tauri
+ * IPC as a raw request body (no JSON / base64 conversion). Per-chunk,
+ * so the transient memory peak is bounded to the chunk size across the
+ * entire JS-webview-Rust copy chain.
+ */
+export async function fileSaveWrite(id: number, chunk: Uint8Array): Promise<void> {
+  await tauriInvoke<void>('file_save_write', chunk, {
+    headers: { 'handle-id': String(id) },
+  })
+}
+
+/**
+ * Finalize the handle identified by `id` by atomic-renaming the `.tmp`
+ * onto the final path. Errors on rename remove the partial so a
+ * half-save doesn't land under the user's chosen name.
+ */
+export async function fileSaveCommit(id: number): Promise<void> {
+  await tauriInvoke<void>('file_save_commit', undefined, {
+    headers: { 'handle-id': String(id) },
+  })
+}
+
+/**
+ * Discard the handle identified by `id` and remove its partial file.
+ * Idempotent against an already-removed handle, so the JS pump's
+ * failure path can call this without checking whether the Rust side
+ * already cleaned up.
+ */
+export async function fileSaveAbort(id: number): Promise<void> {
+  await tauriInvoke<void>('file_save_abort', undefined, {
+    headers: { 'handle-id': String(id) },
+  })
+}
+
+/**
+ * Open the OS file manager (Finder / Explorer / Files) with the given
+ * path selected. Best-effort: failures are swallowed since this is a
+ * post-save nicety, not a load-bearing operation.
+ */
+export async function revealInFileManager(path: string): Promise<void> {
+  if (!isTauriApp())
+    return
+  try {
+    const { revealItemInDir } = await loadTauriOpener()
+    await revealItemInDir(path)
+  }
+  catch (err) {
+    log.warn('revealInFileManager failed', err)
+  }
+}
+
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
 export const windowClose = () => tauriWindowOp(w => w.close())
 export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
@@ -455,6 +634,12 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
 export const platformBridge = {
   getCapabilities,
   getRuntimeState,
+  fileSaveOpen,
+  fileSaveOpenDialog,
+  fileSaveWrite,
+  fileSaveCommit,
+  fileSaveAbort,
+  revealInFileManager,
   async connectSolo(): Promise<void> {
     await tauriInvoke('connect_solo')
     await refreshRuntimeState()
@@ -474,6 +659,19 @@ export const platformBridge = {
         bodyBase64,
       },
     })
+  },
+  // Returns null off-Tauri or off-macOS so callers can skip the IPC.
+  async cliPathStatus(): Promise<CliPathStatus | null> {
+    if (!isTauriApp() || !isMac())
+      return null
+    const payload = await tauriInvoke<CliPathStatusPayload>('cli_path_status')
+    return decodeCliPathStatus(payload)
+  },
+  // `force=true` overwrites a regular (non-symlink) file at the install
+  // destination. Symlinks are always replaced regardless of `force`.
+  async cliInstallSymlink(force = false): Promise<CliInstallResult> {
+    const payload = await tauriInvoke<CliInstallSymlinkPayload>('cli_install_symlink', { force })
+    return decodeCliInstallResult(payload)
   },
   async openChannelRelay(): Promise<void> {
     await tauriInvoke('open_channel_relay')

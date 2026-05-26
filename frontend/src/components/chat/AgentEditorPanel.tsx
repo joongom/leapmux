@@ -20,7 +20,7 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { useIsMobile } from '~/hooks/useIsMobile'
+import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
@@ -215,7 +215,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   let triggerSend: (() => void) | undefined
-  const isMobile = useIsMobile()
+  const isMobile = useIsMobileLayout()
 
   // Mobile single-row composer: render `[+][editor][Send]` instead of the
   // desktop footer bar. Control-request flows keep desktop layout (AC9).

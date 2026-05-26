@@ -1,5 +1,6 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
+import { breakpoints, motion } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -79,7 +80,7 @@ export const fullWindow = style({
   // is in the inner column, pushing the composer above the visible
   // viewport. Locking the scroll here keeps the chosen layout in charge.
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       overflow: 'hidden',
     },
   },
@@ -162,7 +163,6 @@ export const mobileSidebar = style({
   // (resolved against body's *padding-box*, which extends up under the
   // status bar), so a literal `top: 0` would land the drawer's content
   // over the system area on a notched iPhone in standalone PWA mode.
-  // See `docs/specs/pwa-standalone-safe-area.md`.
   top: 'env(safe-area-inset-top)',
   bottom: 0,
   width: '80%',
@@ -170,7 +170,7 @@ export const mobileSidebar = style({
   zIndex: 100,
   backgroundColor: 'var(--card)',
   transform: 'translateX(-100%)',
-  transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+  transition: `transform ${motion.medium}ms ease, box-shadow ${motion.medium}ms ease`,
   // Box-shadow only applied while open — when the drawer is translated
   // off-screen the residual 2px+8px shadow projects into the viewport
   // edge and reads as a gray "gradient" along the left/right side of
@@ -199,25 +199,48 @@ export const mobileSidebarRight = style({
 
 export const mobileSidebarOpen = style({
   transform: 'translateX(0)',
-  boxShadow: '2px 0 8px rgba(0, 0, 0, 0.3)',
+  // Box-shadow on the drawer's exposed edge while open. The side is
+  // discriminated by the sibling `mobileSidebarRight` class so the two
+  // shadow rules live together instead of being split across a base
+  // style + a globalStyle override.
+  selectors: {
+    [`&:not(.${mobileSidebarRight})`]: {
+      boxShadow: '2px 0 8px rgba(0, 0, 0, 0.3)',
+    },
+    [`&.${mobileSidebarRight}`]: {
+      boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.3)',
+    },
+  },
 })
 
-// Mirror the shadow for the right-side drawer when it is open.
-globalStyle(`.${mobileSidebarRight}.${mobileSidebarOpen}`, {
-  boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.3)',
-})
-
+// Rendered unconditionally; opacity + pointer-events flip via
+// `mobileOverlayOpen` so the dim fades in *and* out alongside the
+// drawer's own 200ms transform slide. Mounting on demand via `<Show>`
+// would skip the fade entirely.
 export const mobileOverlay = style({
-  position: 'fixed',
+  'position': 'fixed',
   // Keep the dim out of the system status bar / Dynamic Island area —
   // dimming over the status bar reads as a glass tint on the iOS chrome
   // and feels wrong. Matches the drawer's own safe-area-inset-top.
-  top: 'env(safe-area-inset-top)',
-  left: 0,
-  right: 0,
-  bottom: 0,
-  backgroundColor: 'rgba(0, 0, 0, 0.4)',
-  zIndex: 99,
+  'top': 'env(safe-area-inset-top)',
+  'left': 0,
+  'right': 0,
+  'bottom': 0,
+  'backgroundColor': 'rgba(0, 0, 0, 0.4)',
+  'zIndex': 99,
+  'opacity': 0,
+  'pointerEvents': 'none',
+  'transition': `opacity ${motion.medium}ms ease`,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
+
+export const mobileOverlayOpen = style({
+  opacity: 1,
+  pointerEvents: 'auto',
 })
 
 export const mobileTabBar = style({

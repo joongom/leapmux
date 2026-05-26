@@ -1,9 +1,17 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
+import { frontendBuildInfo } from '~/lib/buildEnv'
 
 export default createHandler(() => (
   <StartServer
     document={({ assets, children, scripts }) => (
-      <html lang="en" data-build={typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : 'unknown'}>
+      <html
+        lang="en"
+        data-version={frontendBuildInfo.version || undefined}
+        data-commit-hash={frontendBuildInfo.commitHash || undefined}
+        data-commit-time={frontendBuildInfo.commitTime || undefined}
+        data-build-time={frontendBuildInfo.buildTime || undefined}
+        data-branch={frontendBuildInfo.branch || undefined}
+      >
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />

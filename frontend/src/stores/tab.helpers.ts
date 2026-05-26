@@ -4,6 +4,7 @@ import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 
 /**
@@ -14,6 +15,27 @@ import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
  */
 
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
+
+/**
+ * Repository-identity equality for matching a (workerId, repoToplevel)
+ * pair against a Tab-shaped value. Used by:
+ *  - AppShell's branch-changed routing to decide whether to refresh the
+ *    gitFileStatusStore singleton (only when the changed repo is the
+ *    active tab's repo).
+ *  - `tabStore.stampBranchOnTabs` to find every tab in the same repo.
+ * Treats undefined workerId / gitToplevel as the empty string so a tab
+ * that's never been git-resolved doesn't accidentally match an empty
+ * comparison.
+ */
+export function isSameRepo(
+  tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,
+  workerId: string,
+  repoToplevel: string,
+): boolean {
+  if (!tabLike)
+    return false
+  return (tabLike.workerId ?? '') === workerId && (tabLike.gitToplevel ?? '') === repoToplevel
+}
 
 /**
  * Worker-provided fields for a terminal tab, ready to spread into a `Tab`
@@ -35,6 +57,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     gitBranch: term.gitBranch || undefined,
     gitOriginUrl: term.gitOriginUrl || undefined,
     gitToplevel: term.gitToplevel || undefined,
+    gitIsWorktree: term.gitIsWorktree || undefined,
     status,
     startupError: term.startupError || undefined,
     startupMessage: term.startupMessage || undefined,
@@ -86,6 +109,7 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     gitBranch: agent.gitStatus?.branch || undefined,
     gitOriginUrl: agent.gitStatus?.originUrl || undefined,
     gitToplevel: agent.gitStatus?.toplevel || undefined,
+    gitIsWorktree: agent.gitStatus?.isWorktree || undefined,
   }
 }
 
@@ -138,23 +162,32 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
 }
 
 /**
- * Normalize a git-info triple (from AgentGitStatus or a flat
+ * Normalize a git-info tuple (from AgentGitStatus or a flat
  * TerminalStatusChange) into the tab shape, mapping empty strings to
- * undefined so comparisons stay sane.
+ * undefined so comparisons stay sane. `isWorktree` collapses `false`
+ * to `undefined`: the field is read with `?? false` everywhere on the
+ * tab side (see `gitTabFieldsDiffer`, `BranchGroup.isWorktree`), so
+ * `false` and `undefined` are observationally identical, and storing
+ * the proto zero would just churn `===`-based equality checks without
+ * adding information. Callers that need to distinguish "probed but not
+ * a worktree" from "never probed" must source that distinction from a
+ * dedicated probe; the broadcast/refresh path doesn't carry it.
  */
-export function toGitTabFields(branch: string, originUrl: string, toplevel: string): GitTabFields {
+export function toGitTabFields(branch: string, originUrl: string, toplevel: string, isWorktree: boolean): GitTabFields {
   return {
     gitBranch: branch || undefined,
     gitOriginUrl: originUrl || undefined,
     gitToplevel: toplevel || undefined,
+    gitIsWorktree: isWorktree || undefined,
   }
 }
 
-/** True when `next` would change any of the three git fields on `tab`. */
+/** True when `next` would change any of the four git fields on `tab`. */
 export function gitTabFieldsDiffer(tab: GitTabFields, next: GitTabFields): boolean {
   return tab.gitBranch !== next.gitBranch
     || tab.gitOriginUrl !== next.gitOriginUrl
     || tab.gitToplevel !== next.gitToplevel
+    || (tab.gitIsWorktree ?? false) !== (next.gitIsWorktree ?? false)
 }
 
 /**
@@ -184,7 +217,7 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
  */
 export function preserveNonEmptyGitFields<T extends Partial<BaseTab>>(
   fresh: T,
-  previous: Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel'> | null | undefined,
+  previous: Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel' | 'gitIsWorktree'> | null | undefined,
 ): T {
   if (!previous)
     return fresh
@@ -193,8 +226,15 @@ export function preserveNonEmptyGitFields<T extends Partial<BaseTab>>(
     next.gitBranch = previous.gitBranch
   if (!next.gitOriginUrl && previous.gitOriginUrl)
     next.gitOriginUrl = previous.gitOriginUrl
-  if (!next.gitToplevel && previous.gitToplevel)
+  // Carry gitToplevel + gitIsWorktree together: they're co-derived
+  // from a single rev-parse, so a transient probe failure that wipes
+  // toplevel must also forget the disposition (the next probe will
+  // refill both). Only restore both when the fresh record has neither.
+  if (!next.gitToplevel && previous.gitToplevel) {
     next.gitToplevel = previous.gitToplevel
+    if (next.gitIsWorktree === undefined && previous.gitIsWorktree !== undefined)
+      next.gitIsWorktree = previous.gitIsWorktree
+  }
   return next
 }
 
@@ -237,7 +277,7 @@ export function preserveTerminalDisplayFields(
 export function resolveOptimisticGitInfo(
   activeTab: Tab | null | undefined,
   newTab: { shellStartDir?: string, workingDir?: string },
-): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string } {
+): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string, gitIsWorktree?: boolean } {
   if (!activeTab)
     return {}
   if (activeTab.type !== TabType.AGENT && activeTab.type !== TabType.TERMINAL)
@@ -255,6 +295,7 @@ export function resolveOptimisticGitInfo(
     gitBranch: activeTab.gitBranch || undefined,
     gitOriginUrl: activeTab.gitOriginUrl || undefined,
     gitToplevel: activeTab.gitToplevel || undefined,
+    gitIsWorktree: activeTab.gitIsWorktree || undefined,
   }
 }
 
@@ -298,6 +339,21 @@ export function isTabReadyForGitStatus(
 
 export function tabKey(tab: { type: TabType, id: string }): string {
   return `${tab.type}:${tab.id}`
+}
+
+/**
+ * Human-readable label for a tab. Prefer `tab.title` (server-set or
+ * user-renamed); fall back to a type-aware default. FILE tabs derive
+ * their label from `basename(filePath)` so the workspace tree and the
+ * tab strip stay in sync — both surfaces show the same name once the
+ * worker's path hydrator has filled `filePath` in.
+ */
+export function tabDisplayLabel(tab: Tab): string {
+  if (tab.title)
+    return tab.title
+  if (tab.type === TabType.FILE)
+    return (tab.filePath ? basename(tab.filePath) : '') || 'File'
+  return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
 }
 
 /**

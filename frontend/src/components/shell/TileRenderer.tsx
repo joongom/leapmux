@@ -6,6 +6,7 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -40,6 +41,7 @@ import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo } from '~/stores/tab.helpers'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
@@ -62,7 +64,6 @@ interface TileRendererOpts {
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
     gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
-    workerInfoStore: { getHomeDir: (workerId: string) => string }
   }
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
@@ -84,17 +85,17 @@ interface TileRendererOpts {
     setIsTabEditing: (fn: () => boolean) => void
     closingTabKeys: () => Set<string>
   }
-  /** New-tab loading flags + dialog setters. */
+  /** New-tab loading flags + dialog handles. */
   newTab: {
     newAgentLoadingProvider: () => AgentProvider | null
     newTerminalLoading: () => boolean
     newShellLoading: () => boolean
-    setShowNewAgentDialog: (v: boolean) => void
-    setShowNewTerminalDialog: (v: boolean) => void
+    newAgentDialog: ToggleDialogState
+    newTerminalDialog: ToggleDialogState
   }
   /** Shell chrome state and sidebar toggles. */
   chrome: {
-    isMobile: () => boolean
+    isMobileLayout: () => boolean
     toggleLeftSidebar: () => void
     toggleRightSidebar: () => void
   }
@@ -122,7 +123,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     layoutStore,
     agentSessionStore,
     gitFileStatusStore,
-    workerInfoStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
   const {
@@ -137,10 +137,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
     newAgentLoadingProvider,
     newTerminalLoading,
     newShellLoading,
-    setShowNewAgentDialog,
-    setShowNewTerminalDialog,
+    newAgentDialog,
+    newTerminalDialog,
   } = opts.newTab
-  const { isMobile, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
+  const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
   const { settingsLoading } = opts
   const floatingWindowStore = opts.floatingWindow?.store
@@ -454,8 +454,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
           onNewAgent: agentOps.handleOpenAgent,
           onNewTerminal: termOps.handleOpenTerminal,
           onNewTerminalWithShell: termOps.handleOpenTerminalWithShell,
-          onNewAgentAdvanced: () => setShowNewAgentDialog(true),
-          onNewTerminalAdvanced: () => setShowNewTerminalDialog(true),
+          onNewAgentAdvanced: () => newAgentDialog.open(),
+          onNewTerminalAdvanced: () => newTerminalDialog.open(),
           availableProviders: agentOps.availableProviders(),
           availableShells: termOps.availableShells(),
           defaultShell: termOps.defaultShell(),
@@ -464,11 +464,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
           newShellLoading: newShellLoading(),
           hasActiveTabContext: !!getCurrentTabContext().workerId,
         }}
-        mobile={{
-          isMobile: isMobile(),
-          onToggleLeftSidebar: toggleLeftSidebar,
-          onToggleRightSidebar: toggleRightSidebar,
-        }}
+        mobile={isMobileLayout()
+          ? {
+              onToggleLeftSidebar: toggleLeftSidebar,
+              onToggleRightSidebar: toggleRightSidebar,
+            }
+          : undefined}
         tileActions={liveActions()}
       />
     )
@@ -631,6 +632,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     getToolUseParsedBySpanId={spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId)}
                     getToolResultParsedBySpanId={spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId)}
                     getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
+                    getTodoById={taskId => chatStore.getTodoById(agentId, taskId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
                       : (text) => {
@@ -669,11 +671,25 @@ export function createTileRenderer(opts: TileRendererOpts) {
               const ctx = getMruAgentContext()
               return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
             }
+            // Single lookup shared by `gitFileStatus` and
+            // `hasStagedAndUnstaged` so both props read from one memo
+            // cell instead of walking the file-status map on every
+            // reactive tick.
+            const gitEntry = createMemo(() => gitFileStatusStore?.getFileStatus(ft.filePath ?? ''))
+            const hasStagedAndUnstaged = createMemo(() => {
+              const entry = gitEntry()
+              if (!entry)
+                return false
+              return entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
+                && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
+            })
             return (
               <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: fileTab()?.id !== ft.id }}>
                 <FileViewer
                   workerId={ft.workerId ?? ''}
                   filePath={ft.filePath ?? ''}
+                  rootPath={getMruAgentContext().workingDir}
+                  homeDir={getMruAgentContext().homeDir}
                   displayMode={ft.displayMode}
                   onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
                   onQuote={isActiveWorkspaceArchived()
@@ -690,16 +706,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       }}
                   fileViewMode={ft.fileViewMode}
                   fileDiffBase={ft.fileDiffBase}
-                  hasStagedAndUnstaged={(() => {
-                    const store = gitFileStatusStore
-                    if (!store)
-                      return false
-                    const entry = store.getFileStatus(ft.filePath ?? '')
-                    if (!entry)
-                      return false
-                    return entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
-                      && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
-                  })()}
+                  gitFileStatus={gitEntry()}
+                  hasStagedAndUnstaged={hasStagedAndUnstaged()}
                   onFileViewModeChange={mode => tabStore.setTabFileViewMode(ft.type, ft.id, mode)}
                   onFileDiffBaseChange={base => tabStore.setTabFileDiffBase(ft.type, ft.id, base)}
                 />

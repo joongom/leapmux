@@ -8,11 +8,13 @@ import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { KEY_MRU_AGENT_PROVIDERS, localStorageSet } from '~/lib/browserStorage'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'
+import { flush } from '../helpers/async'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockOpenAgent = vi.fn()
@@ -70,16 +72,11 @@ function setup() {
     isActiveWorkspaceMutatable: () => true,
     activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
     getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp' }),
-    setShowNewAgentDialog: vi.fn(),
+    newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
     setNewAgentLoadingProvider: vi.fn(),
   })
 
   return { tabStore, agentSessionStore, controlStore, layoutStore, chatStore, ops }
-}
-
-async function flushMicrotasks() {
-  await Promise.resolve()
-  await Promise.resolve()
 }
 
 describe('useAgentOperations', () => {
@@ -103,7 +100,7 @@ describe('useAgentOperations', () => {
               agentProvider: AgentProvider.CODEX,
             }),
           })
-          localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([AgentProvider.CLAUDE_CODE]))
+          localStorageSet(KEY_MRU_AGENT_PROVIDERS, [AgentProvider.CLAUDE_CODE])
 
           const { tabStore, ops } = setup()
           tabStore.addTab({
@@ -115,7 +112,7 @@ describe('useAgentOperations', () => {
             agentProvider: AgentProvider.CODEX,
           })
 
-          await flushMicrotasks()
+          await flush()
           await ops.handleOpenAgent()
 
           expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({
@@ -141,7 +138,7 @@ describe('useAgentOperations', () => {
               agentProvider: AgentProvider.CODEX,
             }),
           })
-          localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([AgentProvider.CODEX, AgentProvider.CLAUDE_CODE]))
+          localStorageSet(KEY_MRU_AGENT_PROVIDERS, [AgentProvider.CODEX, AgentProvider.CLAUDE_CODE])
 
           const { tabStore, ops } = setup()
           tabStore.addTab({
@@ -152,7 +149,7 @@ describe('useAgentOperations', () => {
             workingDir: '/tmp',
           })
 
-          await flushMicrotasks()
+          await flush()
           await ops.handleOpenAgent()
 
           expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({
@@ -168,7 +165,7 @@ describe('useAgentOperations', () => {
     it('opens the dialog when the working directory is unknown', async () => {
       await createRoot(async (dispose) => {
         try {
-          const setShowNewAgentDialog = vi.fn()
+          const newAgentDialog = { open: vi.fn(), close: vi.fn(), isOpen: () => false }
           const agentSessionStore = createAgentSessionStore()
           const controlStore = createControlStore()
           const tabStore = createTabStore()
@@ -190,13 +187,13 @@ describe('useAgentOperations', () => {
             isActiveWorkspaceMutatable: () => true,
             activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
             getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '' }),
-            setShowNewAgentDialog,
+            newAgentDialog,
             setNewAgentLoadingProvider: vi.fn(),
           })
 
           await ops.handleOpenAgent()
 
-          expect(setShowNewAgentDialog).toHaveBeenCalledWith(true)
+          expect(newAgentDialog.open).toHaveBeenCalled()
           expect(mockOpenAgent).not.toHaveBeenCalled()
         }
         finally {
@@ -414,7 +411,7 @@ describe('useAgentOperations', () => {
     })
   })
 
-  describe('handleCloseAgent', () => {
+  describe('handleAgentClose', () => {
     it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
@@ -426,7 +423,7 @@ describe('useAgentOperations', () => {
           // Never-resolving RPC to prove the UI mutation is synchronous.
           mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
 
-          ops.handleCloseAgent('a-1')
+          ops.handleAgentClose('a-1')
 
           // Store mutations happened synchronously.
           expect(tabStore.getAgentTab('a-1')).toBeUndefined()
@@ -457,8 +454,8 @@ describe('useAgentOperations', () => {
             },
           } as CloseAgentResponse)
 
-          ops.handleCloseAgent('a-remove', WorktreeAction.REMOVE)
-          await flushMicrotasks()
+          ops.handleAgentClose('a-remove', WorktreeAction.REMOVE)
+          await flush()
 
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-remove', worktreeAction: WorktreeAction.REMOVE })
         }
@@ -485,8 +482,8 @@ describe('useAgentOperations', () => {
             },
           } as CloseAgentResponse)
 
-          ops.handleCloseAgent('a-fail', WorktreeAction.REMOVE)
-          await flushMicrotasks()
+          ops.handleAgentClose('a-fail', WorktreeAction.REMOVE)
+          await flush()
 
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to remove worktree: git worktree remove /some/wt: exit 128')
           // Tab was removed synchronously — failure doesn't roll back UI.
@@ -509,8 +506,8 @@ describe('useAgentOperations', () => {
           const err = new Error('network down')
           mockCloseAgent.mockRejectedValueOnce(err)
 
-          ops.handleCloseAgent('a-reject')
-          await flushMicrotasks()
+          ops.handleAgentClose('a-reject')
+          await flush()
 
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to close agent', err)
           expect(tabStore.state.tabs.find(t => t.id === 'a-reject')).toBeUndefined()
@@ -531,7 +528,7 @@ describe('useAgentOperations', () => {
 
           mockCloseAgent.mockClear()
 
-          ops.handleCloseAgent('a-2')
+          ops.handleAgentClose('a-2')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
           expect(tabStore.getAgentTab('a-2')).toBeUndefined()
@@ -550,7 +547,7 @@ describe('useAgentOperations', () => {
 
           mockCloseAgent.mockClear()
 
-          ops.handleCloseAgent('nonexistent')
+          ops.handleAgentClose('nonexistent')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
         }

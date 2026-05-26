@@ -6,7 +6,6 @@ import type { Tab } from '~/stores/tab.types'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
-import FileText from 'lucide-solid/icons/file-text'
 import Menu from 'lucide-solid/icons/menu'
 import PanelRight from 'lucide-solid/icons/panel-right'
 import Plus from 'lucide-solid/icons/plus'
@@ -15,15 +14,14 @@ import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
-import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useMruProviders } from '~/hooks/useMruProviders'
-import { basename } from '~/lib/paths'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, tabKey } from '~/stores/tab.helpers'
+import { canCloseTab, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import { isTerminalTab } from '~/stores/tab.types'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -89,9 +87,12 @@ interface TabBarNewTabProps {
   hasActiveTabContext?: boolean
 }
 
-/** Mobile sidebar toggles rendered in the tab bar header. */
+/**
+ * Mobile sidebar toggles rendered in the tab bar header. The presence
+ * of the prop bundle itself signals "we're in mobile-layout mode" —
+ * pass `undefined` (or omit) on desktop.
+ */
 interface TabBarMobileProps {
-  isMobile: boolean
   onToggleLeftSidebar?: () => void
   onToggleRightSidebar?: () => void
 }
@@ -150,17 +151,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
   let editCancelled = false
   let tabListRef: HTMLDivElement | undefined
 
-  const tabLabel = (tab: Tab): string => {
-    if (tab.title)
-      return tab.title
-    if (tab.type === TabType.FILE)
-      return (tab.filePath ? basename(tab.filePath) : '') || 'File'
-    return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
-  }
-
   const startEditing = (tab: Tab) => {
     setEditingTabKey(tabKey(tab))
-    setEditingValue(tabLabel(tab))
+    setEditingValue(tabDisplayLabel(tab))
   }
 
   const commitEdit = (tab: Tab) => {
@@ -169,7 +162,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       return
     }
     const value = editingValue().trim()
-    if (value && value !== tabLabel(tab)) {
+    if (value && value !== tabDisplayLabel(tab)) {
       props.onRename(tab, value)
     }
     setEditingTabKey(null)
@@ -252,11 +245,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
         }}
       >
         <span class={styles.tabIcon}>
-          {tab.type === TabType.AGENT ? <AgentProviderIcon provider={tab.agentProvider} size={14} /> : tab.type === TabType.FILE ? <Icon icon={FileText} size="sm" /> : <Icon icon={Terminal} size="sm" />}
+          <TabTypeIcon tab={tab} />
         </span>
         <Show
           when={editingTabKey() === tabKey(tab)}
-          fallback={<TabTextWithTooltip label={tabLabel(tab)} status={isTerminalTab(tab) ? tab.status : undefined} />}
+          fallback={<TabTextWithTooltip label={tabDisplayLabel(tab)} status={isTerminalTab(tab) ? tab.status : undefined} />}
         >
           <input
             class={styles.tabEditInput}
@@ -375,7 +368,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
 
   return (
     <div class={styles.tabBar} data-testid="tab-bar">
-      <Show when={props.mobile?.isMobile}>
+      <Show when={props.mobile}>
         <IconButton
           icon={Menu}
           iconSize="lg"
@@ -544,7 +537,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </DropdownMenu>
         </div>
       </Show>
-      <Show when={props.mobile?.isMobile}>
+      <Show when={props.mobile}>
         <IconButton
           icon={PanelRight}
           iconSize="lg"

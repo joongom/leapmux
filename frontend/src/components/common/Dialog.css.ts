@@ -1,4 +1,5 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { globalStyle, keyframes, style } from '@vanilla-extract/css'
+import { breakpoints, motion } from '~/styles/tokens'
 
 // Dialog container
 
@@ -9,12 +10,102 @@ export const standard = style({
   'display': 'flex',
   'flexDirection': 'column',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       minWidth: 'unset',
       maxWidth: '100vw',
       width: '100vw',
     },
   },
+})
+
+// Re-impose `display: none` when the dialog is not in the top layer.
+// `.standard`'s `display: flex` author rule beats the UA's
+// `dialog:not([open]) { display: none }`, so without this rule the
+// dialog briefly paints in normal flow between component mount and
+// the `showModal()` call inside `onMount` -- visible as a flash at
+// the top-left of the page on dialogs whose initial content varies
+// in size (e.g. anything carrying `AgentProviderSelector`).
+globalStyle(`.${standard}:not([open])`, {
+  display: 'none',
+})
+
+// Dialog open: the entry animation (opacity 0 -> 1, transform
+// scale(0.95) -> scale(1)) is supplied by @knadh/oat's `dialog.css`
+// via `@starting-style` + Oat's `transition: opacity 150ms,
+// transform 150ms, ...`. We don't ship our own @keyframes for the
+// open path because running both simultaneously caused a visible
+// double-fade flash.
+//
+// Dialog close: Solid removes the dialog from the DOM as soon as the
+// parent's `<Show>` flips, so any exit transition tied to `[open]`
+// being removed never gets to play. We drive the exit by toggling a
+// `.closing` marker class on the dialog (while [open] is still set)
+// that overrides Oat's `:is([open])` values back to the @starting-
+// style values (opacity 0, transform scale(0.95)) -- Oat's existing
+// transition on `opacity`/`transform` animates the change. This
+// stays inside a single transition pipeline so the open-time flicker
+// doesn't return.
+//
+// Backdrop: Oat declares an opacity transition for `dialog::backdrop`
+// in its @layer animations rule, but the transition isn't consistently
+// honored across browsers (in particular WebKit, where the dialog
+// snapped to its dimmed state without a fade). We drive the backdrop
+// fade with our own keyframe targeting `background-color` instead of
+// `opacity`, which is independent of Oat's opacity transition and
+// runs reliably in every browser we ship to.
+
+const backdropEnter = keyframes({
+  from: { backgroundColor: 'rgba(0, 0, 0, 0)' },
+  to: { backgroundColor: 'rgba(0, 0, 0, 0.5)' },
+})
+
+const backdropExit = keyframes({
+  from: { backgroundColor: 'rgba(0, 0, 0, 0.5)' },
+  to: { backgroundColor: 'rgba(0, 0, 0, 0)' },
+})
+
+// Marker class applied by `Dialog.tsx` for the brief window between
+// the user initiating a close and the actual `dialogRef.close()`
+// call. Drives both:
+//   - the dialog's fade-out (rule below: overrides Oat's open-state
+//     opacity/transform back to the @starting-style values, which
+//     Oat's existing transition animates),
+//   - the backdrop's fade-out keyframe (`backdropExit`).
+export const closing = style({})
+
+// Pin the dialog back to Oat's @starting-style values once .closing
+// flips. Oat's `transition: opacity 150ms, transform 150ms, ...`
+// (from `@layer components`) animates the change to those values
+// over `motion.fast` ms; `Dialog.tsx` delays the unmount by the same
+// duration so the transition has time to complete.
+globalStyle(`.${standard}.${closing}[open]`, {
+  opacity: 0,
+  transform: 'scale(0.95)',
+})
+
+const animationOff = {
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+    },
+  },
+}
+
+// `animation-fill-mode: both` closes the one-frame window where the
+// element could paint at its non-animation state (e.g. the dim
+// `rgba(0,0,0,0.5)` background) before the keyframe's `from` (alpha
+// 0) takes effect. Without it the backdrop briefly flashes fully dim
+// before fading in from transparent. Matches Oat's
+// `dialog:is([open])::backdrop { background-color: rgb(0 0 0 / 0.5) }`.
+globalStyle(`.${standard}[open]::backdrop`, {
+  backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  animation: `${backdropEnter} ${motion.fast}ms ease-out both`,
+  ...animationOff,
+})
+
+globalStyle(`.${standard}.${closing}[open]::backdrop`, {
+  animation: `${backdropExit} ${motion.fast}ms ease-in both`,
+  ...animationOff,
 })
 
 export const wide = style({
@@ -114,7 +205,7 @@ export const topTwoColumn = style({
   'gridTemplateColumns': '1fr 1fr',
   'gap': 'var(--space-4)',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       gridTemplateColumns: '1fr',
     },
   },
@@ -129,7 +220,7 @@ export const twoColumn = style({
   'flex': 1,
   'minHeight': 0,
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       gridTemplateColumns: '1fr',
     },
   },
@@ -169,7 +260,7 @@ globalStyle(`${standard} > .${body} > form > section > .vstack > .${twoColumn}`,
 export const labelRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: '6px',
+  gap: 'var(--space-2)',
 })
 
 export const treeContainer = style({

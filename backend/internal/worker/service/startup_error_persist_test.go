@@ -24,7 +24,7 @@ import (
 // TestDeriveAgentStatus_AllBranches exercises each branch of the priority
 // order: runtime Manager → startup registry → persisted DB column → INACTIVE.
 func TestDeriveAgentStatus_AllBranches(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	dbAgent := db.Agent{ID: "agent-1"}
 
@@ -65,7 +65,7 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 // terminal flavor has no "runtime ACTIVE" concept in the derivation
 // (callers decide exited vs running) — only registry > DB > READY.
 func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	term := db.Terminal{ID: "term-1"}
 
@@ -104,8 +104,7 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 // worker restart preserves the STARTUP_FAILED state.
 func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("boom: forced start failure")
 	}
@@ -143,8 +142,7 @@ func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 // with a success mock.
 func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	agentID := "agent-clear-1"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -185,8 +183,7 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 // STARTUP_FAILED so the frontend renders the startup panel.
 func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("doom")
 	}
@@ -208,7 +205,7 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 	// column remains populated.
 	svc.AgentStartup = newAgentStartupRegistry()
 
-	listW := &testResponseWriter{channelID: "test-ch"}
+	listW := newTestWriter()
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, listW)
 	require.Empty(t, listW.errors)
 	require.Len(t, listW.responses, 1)
@@ -228,8 +225,7 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 // restart of a known-bad agent.
 func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	agentID := "agent-send-reject"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -260,8 +256,7 @@ func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 // restart) still receives a STARTUP_FAILED status change sourced from the
 // persisted DB column.
 func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("kaput")
 	}
@@ -281,7 +276,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 	// Simulate worker restart: wipe the in-memory registry.
 	svc.AgentStartup = newAgentStartupRegistry()
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -317,7 +312,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 // runTerminalStartup's failure path writes to terminals.startup_error.
 func TestOpenTerminal_PersistsStartupErrorOnFailure(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("terminal boom")
 	}
@@ -349,7 +344,7 @@ func TestOpenTerminal_PersistsStartupErrorOnFailure(t *testing.T) {
 // The in-memory manager has also forgotten the terminal (since PTY spawn
 // failed), so this hits the DB-only branch of ListTerminals.
 func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("pty no")
 	}
@@ -367,7 +362,7 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	// Simulate worker restart.
 	svc.TerminalStartup = newTerminalStartupRegistry()
 
-	listW := &testResponseWriter{channelID: "test-ch"}
+	listW := newTestWriter()
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, listW)
 	require.Empty(t, listW.errors)
 	require.Len(t, listW.responses, 1)
@@ -385,7 +380,7 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 // `SendAgentMessage` restarts an agent via `ensureAgentRunning` before
 // the DB column has been cleared.
 func TestDeriveAgentStatus_ActiveClearsLingeringDBError(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	dbAgent := db.Agent{ID: "agent-a", StartupError: "lingering"}
 	status, errStr, _ := svc.deriveAgentStatus(&dbAgent, true)
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status)
@@ -397,7 +392,7 @@ func TestDeriveAgentStatus_ActiveClearsLingeringDBError(t *testing.T) {
 // closed rows are filtered by ListAgents' query, not by derivation).
 func TestGetAgentByID_StartupErrorSurvivesClose(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	agentID := "agent-closed"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,

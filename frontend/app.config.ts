@@ -153,6 +153,7 @@ export default defineConfig({
         // Terminal
         '@xterm/xterm',
         '@xterm/addon-fit',
+        '@xterm/addon-serialize',
         '@xterm/addon-webgl',
         // Protobuf / ConnectRPC
         '@bufbuild/protobuf',
@@ -165,6 +166,7 @@ export default defineConfig({
         '@noble/curves/ed25519.js',
         '@noble/hashes/blake2.js',
         '@noble/hashes/hmac.js',
+        '@noble/hashes/utils.js',
         '@noble/post-quantum/ml-kem.js',
         '@noble/post-quantum/slh-dsa.js',
         // UI / misc
@@ -175,6 +177,7 @@ export default defineConfig({
         '@tauri-apps/api/webviewWindow',
         '@tauri-apps/api/window',
         '@tauri-apps/plugin-clipboard-manager',
+        '@tauri-apps/plugin-opener',
         'diff',
         'fracturedjsonjs',
         'fzstd',

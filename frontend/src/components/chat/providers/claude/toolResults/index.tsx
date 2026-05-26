@@ -168,6 +168,13 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
       return null
     return <RemoteTriggerResultView source={source} context={ctx} />
   },
+
+  // Claude Task* tool_result messages are classified `'hidden'` in
+  // plugin.tsx, so they never reach this dispatch. The tool_use side
+  // (toolUse/taskTools.tsx) renders the single-row cards (TaskCreate,
+  // TaskUpdate, TaskGet) by reading the paired result through
+  // `context.toolResultParsed`. TaskList is hidden on both sides
+  // because the persistent todo sidebar already surfaces the list.
 }
 
 /** Render a Claude tool_result message. */

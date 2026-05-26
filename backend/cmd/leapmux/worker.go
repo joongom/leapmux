@@ -175,10 +175,11 @@ func runWorker(args []string) error {
 	svcCtx.Channels = channelMgr
 	svcCtx.Init()
 	// svcCtx.Shutdown persists terminal screen snapshots and broadcasts the
-	// "Connection to the terminal was lost" notice to live watchers. Wrap it
-	// in sync.Once so all exit paths (signal, OnDeregister, defer fallback)
-	// converge on a single invocation that runs *before* the bidi stream is
-	// torn down — otherwise the broadcast races a closed connection.
+	// "[Worker disconnected - Press Enter to restart]" notice to live
+	// watchers. Wrap it in sync.Once so all exit paths (signal,
+	// OnDeregister, defer fallback) converge on a single invocation that
+	// runs *before* the bidi stream is torn down — otherwise the broadcast
+	// races a closed connection.
 	var shutdownOnce sync.Once
 	runShutdown := func() {
 		shutdownOnce.Do(func() {
@@ -202,6 +203,11 @@ func runWorker(args []string) error {
 	}()
 
 	dispatcher := channel.NewDispatcher()
+	// Bind the service.Context's Cleanup WaitGroup BEFORE registering
+	// handlers so RegisterTracked entries are wired against the same
+	// drain Shutdown.Wait observes. Without this, tracked methods
+	// silently skip the Add(1)/Done() pair.
+	dispatcher.BindCleanup(&svcCtx.Cleanup)
 	service.RegisterAll(dispatcher, svcCtx)
 	channelMgr.SetDispatcher(dispatcher)
 

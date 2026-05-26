@@ -1,7 +1,7 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet } from '~/lib/browserStorage'
 
 // Mock the user preferences API to avoid hitting a real network and to keep
 // account-level fields at their hardcoded defaults during tests.
@@ -92,7 +92,7 @@ describe('preferencesContext — browser-level theme override', () => {
 
   it('hydrates the browser theme from localStorage on provider mount (simulated reload)', () => {
     // Pre-seed localStorage with a stored preference and mount fresh.
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ theme: 'dark' }))
+    localStorageSet(KEY_BROWSER_PREFS, { theme: 'dark' })
     const ctx = captureContext()
     expect(ctx.get().browserTheme()).toBe('dark')
     expect(ctx.get().theme()).toBe('dark')
@@ -146,7 +146,7 @@ describe('preferencesContext — browser-level diff view override', () => {
   })
 
   it('hydrates the browser diff view from localStorage on provider mount', () => {
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ diffView: 'split' }))
+    localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
     const ctx = captureContext()
     expect(ctx.get().browserDiffView()).toBe('split')
     expect(ctx.get().diffView()).toBe('split')
@@ -175,6 +175,55 @@ describe('preferencesContext — multiple prefs in one blob', () => {
     const prefs = loadBrowserPrefs()
     expect(prefs.theme).toBe('dark')
     expect('diffView' in prefs).toBe(false)
+  })
+})
+
+describe('preferencesContext — revealAfterDownload (default-on)', () => {
+  // The save flow asks the OS to "reveal in Finder/Explorer" after
+  // writing. Most users want it; we only persist an explicit `false`
+  // when the user opts out — `undefined` is implicit consent.
+  it('defaults to true when localStorage is empty', () => {
+    const ctx = captureContext()
+    expect(ctx.get().revealAfterDownload()).toBe(true)
+    // Nothing serialized while no opt-out has happened.
+    expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('opts out by persisting `false` to the consolidated prefs blob', () => {
+    const ctx = captureContext()
+    ctx.get().setRevealAfterDownload(false)
+    expect(ctx.get().revealAfterDownload()).toBe(false)
+    expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
+  })
+
+  it('opts back in by clearing the key from the blob (not storing `true`)', () => {
+    const ctx = captureContext()
+    ctx.get().setRevealAfterDownload(false)
+    expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
+
+    ctx.get().setRevealAfterDownload(true)
+    expect(ctx.get().revealAfterDownload()).toBe(true)
+    // Default-on prefs round-trip the absence of the key, not `true`.
+    expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('hydrates a stored `false` from localStorage on provider mount', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { revealAfterDownload: false })
+    const ctx = captureContext()
+    expect(ctx.get().revealAfterDownload()).toBe(false)
+  })
+
+  it('does not interact with other persisted prefs in the same blob', () => {
+    const ctx = captureContext()
+    ctx.get().setBrowserTheme('dark')
+    ctx.get().setRevealAfterDownload(false)
+    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
+
+    // Opting back in must not clobber the theme.
+    ctx.get().setRevealAfterDownload(true)
+    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
   })
 })
 

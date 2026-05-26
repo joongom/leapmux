@@ -46,6 +46,31 @@ function buildInterruptRequest(): string {
 const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
 /** System message subtypes that should never surface in the UI. */
 const HIDDEN_SYSTEM_SUBTYPES = new Set(['init', 'task_notification', 'task_updated'])
+/**
+ * Tool span types whose `tool_use` row is suppressed. `ToolSearch` is a
+ * deferred-tool discovery probe whose chat-side surface is uninteresting;
+ * `TaskList` is a pure read-back of state that the persistent todo
+ * sidebar already shows, so both sides of the call are hidden.
+ */
+const HIDDEN_TOOL_USE_SPAN_TYPES = new Set<string>([
+  CLAUDE_TOOL.TOOL_SEARCH,
+  CLAUDE_TOOL.TASK_LIST,
+])
+/**
+ * Tool span types whose `tool_result` row is suppressed because the
+ *  tool_use side already renders the full information (TodoWrite), the
+ *  result is the data source for the tool_use side (TaskCreate /
+ *  TaskUpdate / TaskGet), or the entire call is hidden (ToolSearch,
+ *  TaskList — see {@link HIDDEN_TOOL_USE_SPAN_TYPES}).
+ */
+const HIDDEN_TOOL_RESULT_SPAN_TYPES = new Set<string>([
+  CLAUDE_TOOL.TODO_WRITE,
+  CLAUDE_TOOL.TOOL_SEARCH,
+  CLAUDE_TOOL.TASK_CREATE,
+  CLAUDE_TOOL.TASK_UPDATE,
+  CLAUDE_TOOL.TASK_GET,
+  CLAUDE_TOOL.TASK_LIST,
+])
 function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
   return isNotificationThreadWrapper(wrapper, CLAUDE_EXTRA_TYPES, (t, st) =>
     t === 'system' && !HIDDEN_SYSTEM_SUBTYPES.has(st ?? ''))
@@ -101,7 +126,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     const contentArr = content as Array<Record<string, unknown>>
     const toolUse = contentArr.find(c => isObject(c) && c.type === 'tool_use') as Record<string, unknown> | undefined
     if (toolUse) {
-      if (input.spanType === CLAUDE_TOOL.TOOL_SEARCH)
+      if (input.spanType && HIDDEN_TOOL_USE_SPAN_TYPES.has(input.spanType))
         return { kind: 'hidden' }
       return {
         kind: 'tool_use',
@@ -136,7 +161,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
         // tool_result takes priority over agent_prompt (subagent tool results
         // also have parent_tool_use_id but should be rendered as tool results).
         if ((content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'tool_result')) {
-          if (input.spanType === CLAUDE_TOOL.TODO_WRITE || input.spanType === CLAUDE_TOOL.TOOL_SEARCH)
+          if (input.spanType && HIDDEN_TOOL_RESULT_SPAN_TYPES.has(input.spanType))
             return { kind: 'hidden' }
           return { kind: 'tool_result' }
         }

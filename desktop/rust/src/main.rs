@@ -425,9 +425,9 @@ type DevSidecarConnection = (
 );
 
 #[cfg(unix)]
-type SidecarStream = UnixStream;
-#[cfg(windows)]
-type SidecarStream = PipeHandle;
+type SidecarReader = UnixStream;
+#[cfg(unix)]
+type SidecarWriter = UnixStream;
 
 fn try_connect_dev_sidecar(endpoint: &str) -> Result<Option<DevSidecarConnection>, String> {
     match connect_and_handshake_dev_sidecar(endpoint)? {
@@ -440,20 +440,124 @@ fn try_connect_dev_sidecar(endpoint: &str) -> Result<Option<DevSidecarConnection
     }
 }
 
+#[cfg(unix)]
 fn connect_and_handshake_dev_sidecar(
     endpoint: &str,
-) -> Result<Option<(SidecarStream, SidecarStream, proto::SidecarInfo)>, String> {
+) -> Result<Option<(SidecarReader, SidecarWriter, proto::SidecarInfo)>, String> {
     let (mut reader, mut writer) = match connect_sidecar_endpoint(endpoint)? {
         Some(pair) => pair,
         None => return Ok(None),
     };
-    // Unix streams carry per-op timeouts from connect; Windows named pipes
-    // don't, so arm a watchdog that cancels the handshake's synchronous I/O.
-    #[cfg(windows)]
-    let _watchdog = HandshakeWatchdog::arm(DEV_SIDECAR_HANDSHAKE_TIMEOUT)?;
     let info = fetch_sidecar_info(&mut reader, &mut writer)?;
     finalize_sidecar_streams(&reader, &writer)?;
     Ok(Some((reader, writer, info)))
+}
+
+#[cfg(windows)]
+fn connect_and_handshake_dev_sidecar(
+    endpoint: &str,
+) -> Result<Option<(SidecarReader, SidecarWriter, proto::SidecarInfo)>, String> {
+    // `tokio::time::timeout(...)` must be constructed inside a runtime
+    // context so its `Sleep` can register with the timer driver, so the
+    // async block stays.
+    let result = pipe_runtime()
+        .block_on(async {
+            tokio::time::timeout(
+                DEV_SIDECAR_HANDSHAKE_TIMEOUT,
+                windows_handshake_async(endpoint),
+            )
+            .await
+        })
+        .map_err(|_| {
+            format!(
+                "named-pipe handshake timed out after {:?}",
+                DEV_SIDECAR_HANDSHAKE_TIMEOUT
+            )
+        })??;
+    let (client, info) = match result {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+    let (r, w) = tokio::io::split(client);
+    Ok(Some((SyncPipeReader { inner: r }, SyncPipeWriter { inner: w }, info)))
+}
+
+#[cfg(windows)]
+async fn windows_handshake_async(
+    pipe_name: &str,
+) -> Result<Option<(NamedPipeClient, proto::SidecarInfo)>, String> {
+    let mut client = match open_named_pipe_client(pipe_name).await? {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let request = proto::Frame {
+        message: Some(proto::frame::Message::Request(proto::Request {
+            id: 1,
+            method: Some(proto::request::Method::GetSidecarInfo(
+                proto::GetSidecarInfoRequest {},
+            )),
+        })),
+    };
+    write_frame_async(&mut client, &request)
+        .await
+        .map_err(|err| format!("request sidecar info: {err}"))?;
+    let frame = read_frame_async(&mut client)
+        .await
+        .map_err(|err| format!("read sidecar info: {err}"))?;
+    let resp = match frame.message {
+        Some(proto::frame::Message::Response(resp)) => resp,
+        _ => return Err("unexpected frame while reading sidecar info".to_string()),
+    };
+    let info = sidecar_info_from_response(check_response(resp)?, "get_sidecar_info")?;
+    Ok(Some((client, info)))
+}
+
+#[cfg(windows)]
+async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    frame: &proto::Frame,
+) -> io::Result<()> {
+    let mut buf = Vec::with_capacity(frame.encoded_len() + 10);
+    frame.encode_length_delimited(&mut buf).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("encode frame: {err}"))
+    })?;
+    w.write_all(&buf).await?;
+    w.flush().await
+}
+
+#[cfg(windows)]
+async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<proto::Frame> {
+    let size = read_varint_async(r).await?;
+    if size > MAX_FRAME_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame too large: {size} bytes (max {MAX_FRAME_SIZE})"),
+        ));
+    }
+    let mut data = vec![0u8; size as usize];
+    r.read_exact(&mut data).await?;
+    proto::Frame::decode(data.as_slice())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
+}
+
+#[cfg(windows)]
+async fn read_varint_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<u64> {
+    let mut x: u64 = 0;
+    let mut s: u32 = 0;
+    let mut buf = [0u8; 1];
+    for _ in 0..10 {
+        r.read_exact(&mut buf).await?;
+        let b = buf[0];
+        if b < 0x80 {
+            return Ok(x | (b as u64) << s);
+        }
+        x |= ((b & 0x7f) as u64) << s;
+        s += 7;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "varint overflow",
+    ))
 }
 
 fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
@@ -483,7 +587,7 @@ fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
 #[cfg(unix)]
 fn connect_sidecar_endpoint(
     endpoint: &str,
-) -> Result<Option<(SidecarStream, SidecarStream)>, String> {
+) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
     let stream = match UnixStream::connect(endpoint) {
         Ok(stream) => stream,
         Err(err)
@@ -511,7 +615,7 @@ fn connect_sidecar_endpoint(
 // long-lived reader thread; otherwise reads fail with EAGAIN after a few
 // seconds of idle and tear the connection down.
 #[cfg(unix)]
-fn finalize_sidecar_streams(reader: &SidecarStream, writer: &SidecarStream) -> Result<(), String> {
+fn finalize_sidecar_streams(reader: &SidecarReader, writer: &SidecarWriter) -> Result<(), String> {
     reader
         .set_read_timeout(None)
         .map_err(|err| format!("clear sidecar socket read timeout: {err}"))?;
@@ -526,6 +630,7 @@ fn is_sidecar_gone(endpoint: &str) -> bool {
     !Path::new(endpoint).exists()
 }
 
+#[cfg(unix)]
 fn fetch_sidecar_info(
     reader: &mut impl Read,
     writer: &mut impl Write,
@@ -670,90 +775,121 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
 }
 
 // --- Windows named-pipe dev-mode sidecar reconnect ---
+//
+// Why tokio's overlapped-I/O client and not a raw CreateFileW/ReadFile/
+// WriteFile wrapper: a named-pipe handle opened without FILE_FLAG_OVERLAPPED
+// serializes all I/O through the FILE_OBJECT lock, even across duplicated
+// handles. A blocked long-lived ReadFile would prevent any concurrent
+// WriteFile from making progress and deadlock the reader/writer threads.
 
 #[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, DuplicateHandle, GetLastError, LocalFree, DUPLICATE_SAME_ACCESS,
-        ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE,
+        HLOCAL,
     },
     Security::{
         Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
         TOKEN_USER,
     },
-    Storage::FileSystem::{
-        CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, OPEN_EXISTING,
-    },
-    System::{
-        Pipes::WaitNamedPipeW,
-        Threading::{
-            GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, TerminateProcess,
-            PROCESS_TERMINATE,
-        },
-        IO::CancelSynchronousIo,
+    System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, TerminateProcess, PROCESS_TERMINATE,
     },
 };
 
 #[cfg(windows)]
-fn finalize_sidecar_streams(_: &SidecarStream, _: &SidecarStream) -> Result<(), String> {
-    Ok(())
+type SidecarReader = SyncPipeReader;
+#[cfg(windows)]
+type SidecarWriter = SyncPipeWriter;
+
+// `new_multi_thread` with one worker is deliberate: the reader and writer
+// threads both call `block_on` on this runtime, and `current_thread` would
+// serialize them through the runtime mutex (defeating the parallelism the
+// FILE_OBJECT-lock fix exists to enable).
+#[cfg(windows)]
+fn pipe_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_io()
+            .enable_time()
+            .thread_name("leapmux-named-pipe")
+            .build()
+            .expect("build named-pipe runtime")
+    })
+}
+
+#[cfg(windows)]
+pub struct SyncPipeReader {
+    inner: tokio::io::ReadHalf<NamedPipeClient>,
+}
+
+#[cfg(windows)]
+impl Read for SyncPipeReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        pipe_runtime().block_on(self.inner.read(buf))
+    }
+}
+
+#[cfg(windows)]
+pub struct SyncPipeWriter {
+    inner: tokio::io::WriteHalf<NamedPipeClient>,
+}
+
+#[cfg(windows)]
+impl Write for SyncPipeWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        pipe_runtime().block_on(self.inner.write(buf))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        pipe_runtime().block_on(self.inner.flush())
+    }
+}
+
+// Returns Ok(None) when the pipe doesn't exist — caller's "try again later"
+// signal. ERROR_PIPE_BUSY gets a short retry loop; any other error is fatal.
+#[cfg(windows)]
+async fn open_named_pipe_client(pipe_name: &str) -> Result<Option<NamedPipeClient>, String> {
+    const MAX_BUSY_RETRIES: u32 = 3;
+    for _ in 0..=MAX_BUSY_RETRIES {
+        match ClientOptions::new().open(pipe_name) {
+            Ok(client) => return Ok(Some(client)),
+            Err(err) if err.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => {
+                return Ok(None);
+            }
+            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            Err(err) => return Err(format!("open named pipe {pipe_name}: {err}")),
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(windows)]
 fn is_sidecar_gone(pipe_name: &str) -> bool {
-    matches!(connect_sidecar_endpoint(pipe_name), Ok(None))
+    pipe_runtime().block_on(async {
+        matches!(open_named_pipe_client(pipe_name).await, Ok(None))
+    })
 }
 
 #[cfg(windows)]
 fn connect_sidecar_endpoint(
     pipe_name: &str,
-) -> Result<Option<(SidecarStream, SidecarStream)>, String> {
-    const MAX_BUSY_RETRIES: u32 = 3;
-    let wide = wide_cstring(pipe_name);
-    for _ in 0..=MAX_BUSY_RETRIES {
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                0,
-                std::ptr::null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                std::ptr::null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            let err = unsafe { GetLastError() };
-            if err == ERROR_FILE_NOT_FOUND {
-                return Ok(None);
-            }
-            if err == ERROR_PIPE_BUSY {
-                let waited = unsafe { WaitNamedPipeW(wide.as_ptr(), 5_000) };
-                if waited == 0 {
-                    // Still busy or pipe closed between retries; let the caller
-                    // decide whether to keep trying.
-                    return Ok(None);
-                }
-                continue;
-            }
-            return Err(format!("open named pipe {pipe_name}: error {err}"));
-        }
-
-        let dup = match duplicate_handle(handle) {
-            Ok(dup) => dup,
-            Err(err) => {
-                unsafe {
-                    CloseHandle(handle);
-                }
-                return Err(format!("duplicate pipe handle: error {err}"));
-            }
-        };
-        return Ok(Some((PipeHandle(handle), PipeHandle(dup))));
-    }
-    Ok(None)
+) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
+    let client = match pipe_runtime().block_on(open_named_pipe_client(pipe_name))? {
+        Some(client) => client,
+        None => return Ok(None),
+    };
+    let (r, w) = tokio::io::split(client);
+    Ok(Some((SyncPipeReader { inner: r }, SyncPipeWriter { inner: w })))
 }
 
 #[cfg(windows)]
@@ -796,7 +932,25 @@ fn dev_sidecar_metadata_path() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
+    dev_sidecar_metadata_path_in(&base)
+}
+
+#[cfg(windows)]
+fn dev_sidecar_metadata_path_in(base: &Path) -> PathBuf {
     base.join("leapmux-desktop").join("sidecar.json")
+}
+
+#[cfg(windows)]
+fn sanitize_sid_for_pipe(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -804,19 +958,7 @@ fn sidecar_identity() -> Result<String, String> {
     use std::sync::OnceLock;
     static CACHED: OnceLock<Result<String, String>> = OnceLock::new();
     CACHED
-        .get_or_init(|| {
-            current_user_sid().map(|raw| {
-                raw.chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect()
-            })
-        })
+        .get_or_init(|| current_user_sid().map(|raw| sanitize_sid_for_pipe(&raw)))
         .clone()
 }
 
@@ -858,150 +1000,6 @@ fn current_user_sid() -> Result<String, String> {
     }
 }
 
-#[cfg(windows)]
-fn duplicate_handle(source: HANDLE) -> Result<HANDLE, u32> {
-    unsafe {
-        let mut dup: HANDLE = std::ptr::null_mut();
-        let proc = GetCurrentProcess();
-        if DuplicateHandle(proc, source, proc, &mut dup, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
-            return Err(GetLastError());
-        }
-        Ok(dup)
-    }
-}
-
-#[cfg(windows)]
-fn wide_cstring(s: &str) -> Vec<u16> {
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-// Invariant: .0 is an owned, non-aliased HANDLE — Drop closes it, so
-// constructors (only reachable within this module) must ensure exclusive
-// ownership. Aliased handles would cause double-close and break Send.
-#[cfg(windows)]
-struct PipeHandle(HANDLE);
-
-#[cfg(windows)]
-impl Drop for PipeHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
-// Safe given the ownership invariant on PipeHandle.0 above.
-#[cfg(windows)]
-unsafe impl Send for PipeHandle {}
-
-#[cfg(windows)]
-impl Read for PipeHandle {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        const ERROR_BROKEN_PIPE: u32 = 109;
-        const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
-        let mut read: u32 = 0;
-        let ok = unsafe {
-            ReadFile(
-                self.0,
-                buf.as_mut_ptr() as *mut _,
-                buf.len() as u32,
-                &mut read,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            let err = unsafe { GetLastError() };
-            if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {
-                return Ok(0);
-            }
-            return Err(io::Error::from_raw_os_error(err as i32));
-        }
-        Ok(read as usize)
-    }
-}
-
-#[cfg(windows)]
-impl Write for PipeHandle {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut written: u32 = 0;
-        let ok = unsafe {
-            WriteFile(
-                self.0,
-                buf.as_ptr() as *const _,
-                buf.len() as u32,
-                &mut written,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
-        }
-        Ok(written as usize)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-// ThreadHandle wraps a duplicated thread HANDLE and closes it on drop. The
-// raw HANDLE is !Send; this newtype asserts the invariant that callers hand
-// ownership to exactly one thread.
-#[cfg(windows)]
-struct ThreadHandle(HANDLE);
-
-#[cfg(windows)]
-impl Drop for ThreadHandle {
-    fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
-    }
-}
-
-// Safe: HANDLE is a kernel-object reference; ownership has been duplicated
-// explicitly via DuplicateHandle and is not shared elsewhere.
-#[cfg(windows)]
-unsafe impl Send for ThreadHandle {}
-
-// HandshakeWatchdog bounds a blocking I/O sequence on the arming thread with
-// a deadline. On drop (or deadline), the watchdog thread exits; if the
-// deadline elapses before drop, it calls CancelSynchronousIo on the arming
-// thread so the in-flight ReadFile/WriteFile returns with an error.
-#[cfg(windows)]
-struct HandshakeWatchdog {
-    done_tx: std::sync::mpsc::Sender<()>,
-}
-
-#[cfg(windows)]
-impl HandshakeWatchdog {
-    fn arm(timeout: Duration) -> Result<Self, String> {
-        let target = duplicate_current_thread_handle()?;
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        thread::spawn(move || {
-            if done_rx.recv_timeout(timeout).is_err() {
-                unsafe { CancelSynchronousIo(target.0) };
-            }
-            drop(target);
-        });
-        Ok(HandshakeWatchdog { done_tx })
-    }
-}
-
-#[cfg(windows)]
-impl Drop for HandshakeWatchdog {
-    fn drop(&mut self) {
-        let _ = self.done_tx.send(());
-    }
-}
-
-#[cfg(windows)]
-fn duplicate_current_thread_handle() -> Result<ThreadHandle, String> {
-    duplicate_handle(unsafe { GetCurrentThread() })
-        .map(ThreadHandle)
-        .map_err(|err| format!("duplicate current thread handle: error {err}"))
-}
 
 impl DesktopShell {
     fn new(app_handle: AppHandle) -> Result<Self, String> {
@@ -1462,9 +1460,7 @@ async fn proxy_http(
     let body = if payload.body_base64.is_empty() {
         Vec::new()
     } else {
-        base64::engine::general_purpose::STANDARD
-            .decode(&payload.body_base64)
-            .map_err(|err| format!("decode request body: {err}"))?
+        decode_b64(&payload.body_base64).map_err(|err| format!("decode request body: {err}"))?
     };
 
     let resp = check_response(
@@ -1488,6 +1484,74 @@ async fn proxy_http(
     }
 }
 
+// --- CLI PATH integration (macOS only at the sidecar level) ---
+
+#[derive(Serialize)]
+struct CliPathStatusPayload {
+    state: i32,
+    bundled: String,
+    resolved: String,
+    target: String,
+    #[serde(rename = "targetKind")]
+    target_kind: i32,
+}
+
+#[tauri::command]
+async fn cli_path_status(
+    shell: State<'_, Arc<DesktopShell>>,
+) -> Result<CliPathStatusPayload, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::CliPathStatus(
+                proto::CliPathStatusRequest {},
+            ))
+            .await?,
+    )?;
+
+    match resp.result {
+        Some(proto::response::Result::CliPathStatus(r)) => Ok(CliPathStatusPayload {
+            state: r.state,
+            bundled: r.bundled,
+            resolved: r.resolved,
+            target: r.target,
+            target_kind: r.target_kind,
+        }),
+        _ => Err("unexpected response for cli_path_status".to_string()),
+    }
+}
+
+#[derive(Serialize)]
+struct CliInstallSymlinkPayload {
+    result: i32,
+    command: String,
+    path: String,
+    message: String,
+}
+
+#[tauri::command]
+async fn cli_install_symlink(
+    shell: State<'_, Arc<DesktopShell>>,
+    force: bool,
+) -> Result<CliInstallSymlinkPayload, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::CliInstallSymlink(
+                proto::CliInstallSymlinkRequest { force },
+            ))
+            .await?,
+    )?;
+
+    match resp.result {
+        Some(proto::response::Result::CliInstallSymlink(r)) => Ok(CliInstallSymlinkPayload {
+            result: r.result,
+            command: r.command,
+            path: r.path,
+            message: r.message,
+        }),
+        _ => Err("unexpected response for cli_install_symlink".to_string()),
+    }
+}
+
 #[tauri::command]
 async fn open_channel_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
     check_response(
@@ -1505,9 +1569,7 @@ async fn send_channel_message(
     shell: State<'_, Arc<DesktopShell>>,
     b64_data: String,
 ) -> Result<(), String> {
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(&b64_data)
-        .map_err(|err| format!("decode channel message: {err}"))?;
+    let data = decode_b64(&b64_data).map_err(|err| format!("decode channel message: {err}"))?;
 
     check_response(
         shell
@@ -1692,6 +1754,500 @@ async fn open_in_editor(
             .await?,
     )?;
     Ok(())
+}
+
+fn decode_b64(b64: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| e.to_string())
+}
+
+// File-save commands used by the frontend's download flow.
+//
+// Bytes traverse the Tauri IPC as the raw request body (`InvokeBody::Raw`),
+// not base64 — for multi-MB downloads the encode/decode round-trip plus
+// the ~33% wire bloat was the dominant cost. The filename rides along
+// in a custom header, base64-encoded so HTTP-style ASCII restrictions
+// don't mangle Unicode names.
+//
+// Saves are streamed through a `file_save_open[_dialog] → file_save_write* →
+// file_save_commit | file_save_abort` chain. The Rust side keeps the
+// destination `File` open in a registry between calls, so the JS caller
+// can pipe each 1 MiB worker chunk straight through `file_save_write`
+// without ever materializing the whole file. This bounds the peak
+// transient memory (per chunk × ~3 copies across the IPC boundary) to
+// a few MiB even for multi-hundred-MB downloads.
+//
+// Writes go to a sibling `.tmp` file (`<final>.tmp`); on commit we
+// atomic-rename `.tmp` → final, and on abort we delete the `.tmp`.
+// Consequence: the final name never appears on disk until the save is
+// complete, and (for Save as...) the user's existing file at the chosen
+// path is preserved if the save fails. The Downloads variant iterates
+// candidate names ("foo.ext",
+// "foo (1).ext", ...) skipping any whose final path already exists and
+// claiming each candidate's `<name>.tmp` with `create_new` — that
+// single open both reserves the iteration spot against concurrent
+// LeapMux saves of the same basename and provides the file the bytes
+// stream into.
+
+fn read_header_str<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+    name: &str,
+) -> Result<&'a str, String> {
+    request
+        .headers()
+        .get(name)
+        .ok_or_else(|| format!("missing {name} header"))?
+        .to_str()
+        .map_err(|err| format!("invalid {name} header: {err}"))
+}
+
+fn read_b64_header(request: &tauri::ipc::Request<'_>, name: &str) -> Result<String, String> {
+    let bytes = decode_b64(read_header_str(request, name)?)?;
+    String::from_utf8(bytes).map_err(|err| format!("invalid {name} utf-8: {err}"))
+}
+
+/// Parse the decimal `handle-id` header shared by `file_save_write`,
+/// `file_save_commit`, and `file_save_abort`.
+fn read_handle_id(request: &tauri::ipc::Request<'_>) -> Result<u64, String> {
+    read_header_str(request, "handle-id")?
+        .parse()
+        .map_err(|err| format!("invalid handle-id: {err}"))
+}
+
+/// Run a blocking closure on the dedicated blocking-thread pool and
+/// return its result, surfacing a join failure as an error string. Used
+/// for save-stream operations that touch the disk and shouldn't tie up
+/// the async executor thread servicing other Tauri commands.
+async fn run_blocking<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|err| format!("spawn_blocking join: {err}"))?
+}
+
+/// Cap on collision-dedup attempts. With "foo (N).ext" picking from
+/// `1..MAX`, this bounds the directory scan and the suffix the user
+/// sees ("foo (1023).ext" is well past the point where a different
+/// filename is more useful than another increment).
+const MAX_SAVE_COLLISION_ATTEMPTS: u32 = 1024;
+
+/// How often the idle-handle GC scans the registry for handles whose
+/// JS pump appears to have died. 60s keeps the scan cost negligible
+/// while still bounding orphan-disk-junk lifetime to roughly
+/// `SAVE_HANDLE_GC_INTERVAL + SAVE_HANDLE_IDLE_TIMEOUT`.
+const SAVE_HANDLE_GC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long a handle can sit without a `write_chunk` (or `close`)
+/// before the GC discards it. An active save touches `last_write_at`
+/// per chunk, so the gap can only widen if the JS pump is wedged or
+/// the renderer process died. 5 min is well above any realistic
+/// per-chunk latency (1 MiB chunks rarely take more than seconds) but
+/// short enough that an orphan `.tmp` is gone before the user notices.
+const SAVE_HANDLE_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Registry entry for a save in progress: the open file plus the
+/// paths needed to finalize or discard. Distinct from
+/// `SaveStreamHandle`, which is the id+path token JS holds; this
+/// struct is Rust-only and never crosses the IPC boundary.
+struct OpenSaveStream {
+    /// `Arc<Mutex<File>>` rather than `Mutex<File>` so `write_chunk` can
+    /// short-lock the registry to clone the Arc, drop the registry
+    /// lock, and then take the per-file lock — writes to different
+    /// streams run in parallel instead of serializing on a registry-
+    /// wide mutex.
+    file: Arc<Mutex<std::fs::File>>,
+    /// Sibling `<final>.tmp` path that bytes stream into.
+    tmp_path: PathBuf,
+    /// Final destination — `.tmp` is atomic-renamed onto this on success.
+    final_path: PathBuf,
+    /// Updated on insert and on every `write_chunk`. The idle-handle
+    /// GC compares this against `SAVE_HANDLE_IDLE_TIMEOUT` to detect
+    /// JS pumps that died without calling `file_save_commit` or
+    /// `file_save_abort`. Lives under the registry `Mutex<HashMap>`
+    /// lock so it shares the existing critical section instead of
+    /// needing its own atomic.
+    last_write_at: Instant,
+}
+
+/// Open destination files keyed by a monotonic u64 id. The JS caller
+/// receives the id from `file_save_open[_dialog]` and submits it back
+/// with each `file_save_write` and the final `file_save_commit` or
+/// `file_save_abort`.
+struct SaveStreamRegistry {
+    /// Starts at 1 so a freshly constructed registry never hands out 0 —
+    /// keeps "0 == sentinel" assumptions on the JS side safe.
+    next_id: AtomicU64,
+    handles: Mutex<HashMap<u64, OpenSaveStream>>,
+}
+
+impl SaveStreamRegistry {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Insert a freshly-opened file into the registry and return the
+    /// JS-facing handle (id + the final path as a UTF-8 string).
+    /// Both `file_save_open` and `file_save_open_dialog` end with this,
+    /// so it lives here to keep the id/path packaging in one spot.
+    fn insert(
+        &self,
+        file: std::fs::File,
+        tmp_path: PathBuf,
+        final_path: PathBuf,
+    ) -> SaveStreamHandle {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let path = final_path.to_string_lossy().into_owned();
+        self.handles.lock().unwrap().insert(
+            id,
+            OpenSaveStream {
+                file: Arc::new(Mutex::new(file)),
+                tmp_path,
+                final_path,
+                last_write_at: Instant::now(),
+            },
+        );
+        SaveStreamHandle { id, path }
+    }
+
+    fn take(&self, id: u64) -> Option<OpenSaveStream> {
+        self.handles.lock().unwrap().remove(&id)
+    }
+
+    fn write_chunk(&self, id: u64, bytes: &[u8]) -> Result<(), String> {
+        // Lock the registry only long enough to refresh the idle
+        // timestamp and clone the per-handle Arc, then drop the
+        // registry lock before acquiring the file lock. Concurrent
+        // writes targeting different handles can then proceed in
+        // parallel.
+        let file = {
+            let mut guard = self.handles.lock().unwrap();
+            let handle = guard
+                .get_mut(&id)
+                .ok_or_else(|| format!("unknown save handle {id}"))?;
+            handle.last_write_at = Instant::now();
+            handle.file.clone()
+        };
+        let mut guard = file.lock().unwrap();
+        guard
+            .write_all(bytes)
+            .map_err(|err| format!("write: {err}"))
+    }
+
+    /// Drop all open handles and remove any partial files. Called from
+    /// the app exit path so an interrupted save doesn't leave junk on
+    /// disk.
+    fn cleanup_all(&self) {
+        let drained: Vec<_> = self.handles.lock().unwrap().drain().collect();
+        for (_, stream) in drained {
+            discard_stream(stream);
+        }
+    }
+
+    /// Discard handles whose `last_write_at` is older than `max_idle`.
+    /// Two-phase: snapshot stale ids under a brief lock, then `take`
+    /// each individually so the per-discard `remove_file` syscalls
+    /// never run under the registry lock. A handle being actively
+    /// written to during the scan window is fine — a racing
+    /// `write_chunk` refreshes `last_write_at`, and the take in phase
+    /// 2 re-checks against `max_idle` and skips it.
+    fn gc_idle(&self, max_idle: Duration) {
+        let now = Instant::now();
+        let stale_ids: Vec<u64> = {
+            let guard = self.handles.lock().unwrap();
+            guard
+                .iter()
+                .filter(|(_, h)| now.duration_since(h.last_write_at) >= max_idle)
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        for id in stale_ids {
+            // Re-check under lock: a `write_chunk` racing between
+            // snapshot and take may have refreshed the timestamp. If
+            // it has, leave the stream alone.
+            let stream = {
+                let mut guard = self.handles.lock().unwrap();
+                match guard.get(&id) {
+                    Some(h) if now.duration_since(h.last_write_at) >= max_idle => {
+                        guard.remove(&id)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(stream) = stream {
+                discard_stream(stream);
+            }
+        }
+    }
+}
+
+/// Append `.tmp` to `path` while preserving the existing OsString
+/// (handles non-UTF-8 paths cleanly).
+fn tmp_path_for(final_path: &Path) -> PathBuf {
+    let mut name = final_path.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+/// Open (or create+truncate) the `.tmp` sibling of `final_path` for
+/// streaming writes. Shared by `file_save_open` and
+/// `file_save_open_dialog`; the Downloads-flow caller wraps the error
+/// to also undo its name reservation.
+fn open_tmp_for_write(final_path: &Path) -> Result<(std::fs::File, PathBuf), String> {
+    let tmp_path = tmp_path_for(final_path);
+    let tmp_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .map_err(|err| format!("open tmp file: {err}"))?;
+    Ok((tmp_file, tmp_path))
+}
+
+/// Remove the partial `.tmp`. Used by both `discard_stream` and the
+/// failure branches of `file_save_commit`, which have already dropped
+/// the `File` themselves. The final path is never ours to remove —
+/// nothing was ever created there.
+fn discard_partials(tmp_path: &Path) {
+    let _ = std::fs::remove_file(tmp_path);
+}
+
+/// Drop the file handle and remove the partial `.tmp`.
+fn discard_stream(stream: OpenSaveStream) {
+    let OpenSaveStream { file, tmp_path, .. } = stream;
+    // Drop before remove: Windows refuses `remove_file` while the
+    // file handle is open.
+    drop(file);
+    discard_partials(&tmp_path);
+}
+
+/// JS-facing handle to an open save stream. Returned by
+/// `file_save_open[_dialog]` and submitted back (as `id`) with each
+/// `file_save_write` and the final `file_save_commit` /
+/// `file_save_abort`. Mirrors the `SaveStreamHandle` interface in
+/// `platformBridge.ts`.
+#[derive(Serialize)]
+struct SaveStreamHandle {
+    id: u64,
+    path: String,
+}
+
+/// Pick a non-colliding "foo (N).ext" candidate under `dir` and open
+/// its `<candidate>.tmp` sibling with `create_new`. The `.tmp` open
+/// serves double duty: it both reserves the iteration spot against
+/// concurrent LeapMux saves of the same basename and provides the file
+/// the bytes stream into. The candidate itself is skipped if it already
+/// exists, preserving the "don't silently overwrite a user file in
+/// Downloads" behavior.
+fn open_unique_tmp(
+    dir: PathBuf,
+    filename: String,
+) -> Result<(std::fs::File, PathBuf, PathBuf), String> {
+    let as_path = std::path::Path::new(&filename);
+    let stem = as_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = as_path.extension().map(|s| s.to_string_lossy().into_owned());
+    for i in 0..MAX_SAVE_COLLISION_ATTEMPTS {
+        let candidate_name = if i == 0 {
+            filename.clone()
+        } else {
+            match &ext {
+                Some(e) if !e.is_empty() => format!("{stem} ({i}).{e}"),
+                _ => format!("{stem} ({i})"),
+            }
+        };
+        let final_path = dir.join(&candidate_name);
+        match final_path.try_exists() {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => return Err(format!("stat {candidate_name}: {err}")),
+        }
+        let tmp_path = tmp_path_for(&final_path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(f) => return Ok((f, tmp_path, final_path)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("create tmp file: {err}")),
+        }
+    }
+    Err(format!(
+        "too many collisions for {filename} (gave up after {MAX_SAVE_COLLISION_ATTEMPTS})"
+    ))
+}
+
+/// Open a destination in the OS Downloads directory and return a
+/// streaming handle. `filename` (from the `filename-b64` header) is
+/// sanitized to its basename and collision-dedupped with " (N)".
+#[tauri::command]
+async fn file_save_open(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<SaveStreamHandle, String> {
+    let filename = read_b64_header(&request, "filename-b64")?;
+    let downloads = dirs::download_dir().ok_or_else(|| "no downloads directory".to_string())?;
+    // Disallow separators in the supplied filename so callers can't
+    // escape the Downloads directory.
+    let safe_name = std::path::Path::new(&filename)
+        .file_name()
+        .ok_or_else(|| "invalid filename".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    let registry = registry.inner().clone();
+    let (file, tmp_path, final_path) =
+        run_blocking(move || open_unique_tmp(downloads, safe_name)).await?;
+    Ok(registry.insert(file, tmp_path, final_path))
+}
+
+/// Show a native save-as dialog and return a streaming handle for the
+/// chosen path. Returns `None` when the user cancels — JS callers
+/// should short-circuit before any worker fetch so a cancellation
+/// costs nothing.
+#[tauri::command]
+async fn file_save_open_dialog(
+    app: tauri::AppHandle,
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<SaveStreamHandle>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let default_name = read_b64_header(&request, "default-name-b64")?;
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&default_name)
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let path_opt = rx.await.map_err(|e| e.to_string())?;
+    let Some(file_path) = path_opt else {
+        return Ok(None);
+    };
+    let final_path = file_path.into_path().map_err(|e| e.to_string())?;
+    let registry = registry.inner().clone();
+    let (file, tmp_path) = run_blocking({
+        let final_path = final_path.clone();
+        move || open_tmp_for_write(&final_path)
+    })
+    .await?;
+    Ok(Some(registry.insert(file, tmp_path, final_path)))
+}
+
+/// Append the request body bytes to the open file identified by the
+/// decimal `handle-id` header. Uses `block_in_place` rather than
+/// `spawn_blocking` so the body slice can be borrowed directly from
+/// the request without a per-chunk clone — for a 100 MB save that
+/// avoids ~100 MiB of memcpy traffic.
+#[tauri::command]
+async fn file_save_write(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let handle_id = read_handle_id(&request)?;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b.as_slice(),
+        _ => return Err("expected raw bytes body".to_string()),
+    };
+    // Tauri's command executor runs on a multi-thread tokio runtime,
+    // so `block_in_place` is safe here: it parks the current worker
+    // for the duration of the write and lets the runtime steal other
+    // tasks. The write is bounded to one chunk (~1 MiB). The debug
+    // assertion makes a future runtime-config regression (e.g. switching
+    // to `current_thread`) fail with a clear message instead of tokio's
+    // generic "can call `blocking` only from a `MultiThread`" panic.
+    debug_assert_eq!(
+        tokio::runtime::Handle::current().runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::MultiThread,
+        "file_save_write uses block_in_place; requires a multi-thread runtime",
+    );
+    tokio::task::block_in_place(|| registry.write_chunk(handle_id, bytes))
+}
+
+/// Finalize the save identified by `handle-id`: sync bytes to disk and
+/// atomic-rename `.tmp` onto the final path. Discards partials on
+/// failure so a partial sync doesn't leave a junk file under the
+/// chosen name.
+#[tauri::command]
+async fn file_save_commit(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let handle_id = read_handle_id(&request)?;
+    let registry = registry.inner().clone();
+    run_blocking(move || {
+        let Some(stream) = registry.take(handle_id) else {
+            return Err(format!("unknown save handle {handle_id}"));
+        };
+        let OpenSaveStream {
+            file,
+            tmp_path,
+            final_path,
+            last_write_at: _,
+        } = stream;
+        // No `sync_all` before the rename — intentional. A `sync_all`
+        // on a multi-hundred-MB save blocks for seconds while the OS
+        // flushes the page cache, and neither flow has a contract that
+        // needs it: the Downloads variant only ever writes to a path
+        // that was empty when we picked the name (so a power-loss
+        // window between rename and OS flush just loses the new file,
+        // it can't corrupt anything else), and the Save-as variant's
+        // overwrite is already non-atomic at the user-content level
+        // (the user picked a path knowing it would be replaced, and
+        // can re-save on crash). Don't add a sync here without
+        // matching the latency cost to a concrete guarantee we
+        // actually need to make.
+        //
+        // Drop the Arc<Mutex<File>> before the rename: Windows refuses
+        // `rename`/`remove_file` while the handle is open. `take` above
+        // removed the registry's clone, so unless a concurrent
+        // `write_chunk` is still holding a clone (impossible while the
+        // caller awaits each write sequentially) this drop releases
+        // the underlying File.
+        drop(file);
+        // `std::fs::rename` replaces the destination on both Unix and
+        // Windows. For save-as that overwrites the user's prior content
+        // (the path they chose). For the Downloads flow the final path
+        // was empty when we picked the name (`open_unique_tmp` skips
+        // candidates whose final already exists); a file appearing
+        // there mid-stream is a TOCTOU race we accept.
+        let result = std::fs::rename(&tmp_path, &final_path)
+            .map_err(|err| format!("rename: {err}"));
+        if result.is_err() {
+            discard_partials(&tmp_path);
+        }
+        result
+    })
+    .await
+}
+
+/// Discard the save identified by `handle-id`: drop the open file and
+/// remove the partial `.tmp`. Idempotent against an already-removed
+/// handle (e.g. the idle GC raced the JS pump) so the failure path on
+/// the JS side stays simple.
+#[tauri::command]
+async fn file_save_abort(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let handle_id = read_handle_id(&request)?;
+    let registry = registry.inner().clone();
+    run_blocking(move || {
+        if let Some(stream) = registry.take(handle_id) {
+            discard_stream(stream);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2004,6 +2560,7 @@ fn main() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app);
@@ -2083,6 +2640,22 @@ fn main() {
                 }
             }
             app.manage(shell);
+            let save_registry = Arc::new(SaveStreamRegistry::new());
+            // Background GC for orphan save handles: when the renderer
+            // dies mid-stream (page reload, crash) the JS pump never
+            // calls `file_save_commit` or `file_save_abort`, leaving
+            // the handle + its `.tmp` file alive until `cleanup_all`
+            // at app exit. The GC bounds that lifetime to roughly
+            // `IDLE_TIMEOUT + GC_INTERVAL`.
+            let gc_registry = save_registry.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(SAVE_HANDLE_GC_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    gc_registry.gc_idle(SAVE_HANDLE_IDLE_TIMEOUT);
+                }
+            });
+            app.manage(save_registry);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2093,6 +2666,8 @@ fn main() {
             connect_solo,
             connect_distributed,
             proxy_http,
+            cli_path_status,
+            cli_install_symlink,
             open_channel_relay,
             send_channel_message,
             close_channel_relay,
@@ -2103,6 +2678,11 @@ fn main() {
             list_tunnels,
             list_editors,
             open_in_editor,
+            file_save_open,
+            file_save_open_dialog,
+            file_save_write,
+            file_save_commit,
+            file_save_abort,
             switch_mode,
             #[cfg(target_os = "macos")]
             restart_app,
@@ -2120,6 +2700,13 @@ fn main() {
             if let RunEvent::ExitRequested { api, .. } = event {
                 if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
                     if !shell.exit_in_progress.load(Ordering::SeqCst) {
+                        // Drop any open save handles and remove their
+                        // partial files before shutting the sidecar
+                        // down. The CAS inside `handle_app_exit`
+                        // guarantees we run this exactly once.
+                        if let Some(registry) = app.try_state::<Arc<SaveStreamRegistry>>() {
+                            registry.cleanup_all();
+                        }
                         api.prevent_exit();
                         handle_app_exit(shell.inner().clone());
                     }
@@ -2139,11 +2726,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[cfg(windows)]
-    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
-    #[cfg(windows)]
-    use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
-    };
+    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -2221,52 +2804,44 @@ mod tests {
         format!("\\\\.\\pipe\\leapmux-test-{pid}-{nanos}-{counter}")
     }
 
+    // `ServerOptions::create` must run inside the pipe runtime so the new
+    // NamedPipeServer registers with the right I/O driver.
+    #[cfg(windows)]
+    fn start_test_pipe_server(pipe_name: &str) -> NamedPipeServer {
+        pipe_runtime().block_on(async {
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(pipe_name)
+                .expect("create named pipe server")
+        })
+    }
+
     #[cfg(windows)]
     fn spawn_fake_sidecar_pipe(pipe_name: String) -> thread::JoinHandle<()> {
-        // Create the pipe synchronously so the client can connect as soon as
-        // this function returns, regardless of when the accept thread runs.
-        let wide = wide_cstring(&pipe_name);
-        let handle = unsafe {
-            CreateNamedPipeW(
-                wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                1,
-                65536,
-                65536,
-                0,
-                std::ptr::null(),
-            )
-        };
-        assert!(
-            handle != INVALID_HANDLE_VALUE,
-            "CreateNamedPipeW failed: error {}",
-            unsafe { GetLastError() },
-        );
-        let server = PipeHandle(handle);
+        let server = start_test_pipe_server(&pipe_name);
         thread::spawn(move || {
-            let mut stream = server;
-            let connected = unsafe { ConnectNamedPipe(stream.0, std::ptr::null_mut()) };
-            if connected == 0 {
-                let err = unsafe { GetLastError() };
-                const ERROR_PIPE_CONNECTED: u32 = 535;
-                assert_eq!(
-                    err, ERROR_PIPE_CONNECTED,
-                    "ConnectNamedPipe failed: error {err}"
-                );
-            }
-            let _ = read_frame(&mut stream).expect("read handshake request");
-            let mut info = sidecar_info(proto::SidecarShellMode::Unspecified, false, "");
-            info.pid = std::process::id() as i64;
-            let response = proto::Frame {
-                message: Some(proto::frame::Message::Response(proto::Response {
-                    id: 1,
-                    error: String::new(),
-                    result: Some(proto::response::Result::SidecarInfo(info)),
-                })),
-            };
-            write_frame(&mut stream, &response).expect("write handshake response");
-            let _ = stream.read(&mut [0u8; 1]);
+            pipe_runtime().block_on(async move {
+                let mut server = server;
+                server.connect().await.expect("connect named pipe");
+                let _ = read_frame_async(&mut server)
+                    .await
+                    .expect("read handshake request");
+                let mut info = sidecar_info(proto::SidecarShellMode::Unspecified, false, "");
+                info.pid = std::process::id() as i64;
+                let response = proto::Frame {
+                    message: Some(proto::frame::Message::Response(proto::Response {
+                        id: 1,
+                        error: String::new(),
+                        result: Some(proto::response::Result::SidecarInfo(info)),
+                    })),
+                };
+                write_frame_async(&mut server, &response)
+                    .await
+                    .expect("write handshake response");
+                // Wait for the client to drop the connection.
+                let mut scratch = [0u8; 1];
+                let _ = server.read(&mut scratch).await;
+            });
         })
     }
 
@@ -2302,96 +2877,261 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn handshake_watchdog_cancels_wedged_read() {
-        // Spawn a server that accepts the connection but never writes back.
-        // With the watchdog armed, the ReadFile should return an error after
-        // the deadline instead of blocking indefinitely.
+    fn handshake_timeout_surfaces_when_server_never_replies() {
         let pipe_name = unique_test_pipe_name();
-        let wide = wide_cstring(&pipe_name);
-        let server_handle = unsafe {
-            CreateNamedPipeW(
-                wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                1,
-                65536,
-                65536,
-                0,
-                std::ptr::null(),
-            )
-        };
-        assert!(server_handle != INVALID_HANDLE_VALUE);
-        let server = PipeHandle(server_handle);
+        // Create the server *before* spawning the accept thread, otherwise
+        // the client races and returns Ok(None) (pipe absent) before the
+        // timeout fires.
+        let server = start_test_pipe_server(&pipe_name);
         let server_thread = thread::spawn(move || {
-            let _stream = server;
-            unsafe { ConnectNamedPipe(_stream.0, std::ptr::null_mut()) };
-            thread::sleep(Duration::from_secs(3));
+            pipe_runtime().block_on(async move {
+                let _ = server.connect().await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            });
         });
 
-        let (mut reader, _writer) = connect_sidecar_endpoint(&pipe_name)
-            .expect("connect ok")
-            .expect("server reachable");
-
         let start = Instant::now();
-        let _watchdog = HandshakeWatchdog::arm(Duration::from_millis(200)).expect("arm");
-        let mut buf = [0u8; 16];
-        let err = reader.read(&mut buf).expect_err("read should fail");
+        let result = pipe_runtime().block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                windows_handshake_async(&pipe_name),
+            )
+            .await
+        });
         let elapsed = start.elapsed();
-
+        assert!(result.is_err(), "expected handshake to time out");
         assert!(
             elapsed < Duration::from_secs(2),
-            "read should have been cancelled, elapsed {:?}",
+            "timeout should fire quickly, elapsed {:?}",
             elapsed
         );
-        const ERROR_OPERATION_ABORTED: i32 = 995;
-        assert_eq!(
-            err.raw_os_error(),
-            Some(ERROR_OPERATION_ABORTED),
-            "unexpected error: {err}"
-        );
 
-        drop(_watchdog);
         let _ = server_thread.join();
     }
 
+    // Regression test for the FILE_OBJECT-lock deadlock that motivated the
+    // tokio overlapped-I/O switch: under the pre-fix synchronous handles +
+    // DuplicateHandle setup, the writer's WriteFile would queue behind the
+    // reader's in-flight ReadFile on the shared FILE_OBJECT and hang
+    // forever.
     #[cfg(windows)]
     #[test]
-    fn sidecar_identity_returns_valid_sid_form() {
-        let sid = sidecar_identity().expect("sidecar_identity");
-        assert!(
-            sid.starts_with("S-1-"),
-            "expected SID to start with S-1-, got: {sid}"
-        );
-        assert!(
-            sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
-            "sanitized SID must contain only alphanumerics and hyphens, got: {sid}"
-        );
+    fn split_halves_allow_concurrent_read_and_write() {
+        let pipe_name = unique_test_pipe_name();
+        let server = start_test_pipe_server(&pipe_name);
+        let server_thread = thread::spawn(move || {
+            pipe_runtime().block_on(async move {
+                let mut server = server;
+                server.connect().await.expect("server connect");
+                let request = read_frame_async(&mut server)
+                    .await
+                    .expect("server reads request");
+                let id = match request.message {
+                    Some(proto::frame::Message::Request(r)) => r.id,
+                    other => panic!("expected request, got {other:?}"),
+                };
+                let response = proto::Frame {
+                    message: Some(proto::frame::Message::Response(proto::Response {
+                        id,
+                        error: String::new(),
+                        result: Some(proto::response::Result::BoolValue(proto::BoolValue {
+                            value: true,
+                        })),
+                    })),
+                };
+                write_frame_async(&mut server, &response)
+                    .await
+                    .expect("server writes response");
+                let mut scratch = [0u8; 1];
+                let _ = server.read(&mut scratch).await;
+            });
+        });
+
+        let (mut reader, mut writer) = connect_sidecar_endpoint(&pipe_name)
+            .expect("connect ok")
+            .expect("server reachable");
+
+        // Park the reader on a blocking read first so the write below is
+        // *concurrent* with an in-flight read — the scenario that deadlocked
+        // under synchronous handles.
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame(&mut reader);
+            let _ = tx.send(result);
+        });
+        thread::sleep(Duration::from_millis(100));
+
+        let request = proto::Frame {
+            message: Some(proto::frame::Message::Request(proto::Request {
+                id: 42,
+                method: Some(proto::request::Method::GetSidecarInfo(
+                    proto::GetSidecarInfoRequest {},
+                )),
+            })),
+        };
+        write_frame(&mut writer, &request).expect("client write");
+
+        let response = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("response not received within 5s — deadlock regression?")
+            .expect("read frame");
+        match response.message {
+            Some(proto::frame::Message::Response(r)) => assert_eq!(r.id, 42),
+            other => panic!("expected response with id=42, got {other:?}"),
+        }
+
+        drop(writer);
+        server_thread.join().expect("server thread");
     }
 
     #[cfg(windows)]
     #[test]
-    fn dev_sidecar_endpoint_has_expected_shape() {
-        let name = dev_sidecar_endpoint().expect("endpoint");
-        assert!(
-            name.starts_with("\\\\.\\pipe\\leapmux-desktop-"),
-            "unexpected prefix in pipe name: {name}"
-        );
-        assert!(
-            name.ends_with("-sidecar"),
-            "unexpected suffix in pipe name: {name}"
-        );
+    fn is_sidecar_gone_reports_true_for_absent_pipe() {
+        let pipe_name = unique_test_pipe_name();
+        assert!(is_sidecar_gone(&pipe_name));
     }
 
     #[cfg(windows)]
     #[test]
-    fn dev_sidecar_metadata_path_ends_with_sidecar_json() {
-        let path = dev_sidecar_metadata_path();
-        let suffix = PathBuf::from("leapmux-desktop").join("sidecar.json");
-        assert!(
-            path.ends_with(&suffix),
-            "expected path to end with {}, got: {}",
-            suffix.display(),
-            path.display()
+    fn is_sidecar_gone_reports_false_when_server_listening() {
+        let pipe_name = unique_test_pipe_name();
+        let _server = start_test_pipe_server(&pipe_name);
+        assert!(!is_sidecar_gone(&pipe_name));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_frame_async_roundtrips_multibyte_varint_frame() {
+        // A frame whose encoded body exceeds 127 bytes forces the
+        // length-delimited prefix into a multi-byte varint, exercising the
+        // loop in read_varint_async.
+        pipe_runtime().block_on(async {
+            let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
+            let mut info = sidecar_info(
+                proto::SidecarShellMode::Distributed,
+                true,
+                "https://example.invalid/path/to/hub",
+            );
+            info.binary_hash = "x".repeat(200);
+            let frame = proto::Frame {
+                message: Some(proto::frame::Message::Response(proto::Response {
+                    id: 7,
+                    error: String::new(),
+                    result: Some(proto::response::Result::SidecarInfo(info)),
+                })),
+            };
+            assert!(
+                frame.encoded_len() > 127,
+                "test precondition: frame must exceed 1-byte varint range, got {}",
+                frame.encoded_len()
+            );
+
+            write_frame_async(&mut writer, &frame).await.expect("write");
+            drop(writer);
+            let received = read_frame_async(&mut reader).await.expect("read");
+            assert_eq!(received.encoded_len(), frame.encoded_len());
+            match received.message {
+                Some(proto::frame::Message::Response(r)) => assert_eq!(r.id, 7),
+                other => panic!("unexpected message: {other:?}"),
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_frame_async_rejects_oversize_varint_before_allocating() {
+        // A length prefix exceeding MAX_FRAME_SIZE must be rejected without
+        // attempting to allocate the payload, so a peer can't make us
+        // allocate gigabytes by sending a bogus varint.
+        pipe_runtime().block_on(async {
+            let (mut writer, mut reader) = tokio::io::duplex(64);
+            let mut buf = Vec::new();
+            let mut v: u64 = MAX_FRAME_SIZE + 1;
+            loop {
+                let byte = (v & 0x7f) as u8;
+                v >>= 7;
+                if v == 0 {
+                    buf.push(byte);
+                    break;
+                }
+                buf.push(byte | 0x80);
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut writer, &buf)
+                .await
+                .expect("write varint");
+            drop(writer);
+
+            let err = read_frame_async(&mut reader)
+                .await
+                .expect_err("oversize frame must error");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string().contains("frame too large"),
+                "unexpected error message: {err}"
+            );
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_frame_async_returns_eof_when_peer_closes() {
+        // The reader thread distinguishes UnexpectedEof from real errors so
+        // a clean peer-close doesn't log a noisy error line. Pin that
+        // contract here.
+        pipe_runtime().block_on(async {
+            let (writer, mut reader) = tokio::io::duplex(64);
+            drop(writer);
+            let err = read_frame_async(&mut reader)
+                .await
+                .expect_err("eof must be reported");
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sanitize_sid_for_pipe_replaces_forbidden_chars() {
+        // A real Windows SID is preserved verbatim.
+        assert_eq!(
+            sanitize_sid_for_pipe("S-1-5-21-1234567890-1234567890-1234567890-1001"),
+            "S-1-5-21-1234567890-1234567890-1234567890-1001"
+        );
+        // Forbidden chars become `_`.
+        assert_eq!(
+            sanitize_sid_for_pipe("alice/bob\\carol\\@dave"),
+            "alice_bob_carol__dave"
+        );
+        // Whitespace, dot, and other punctuation all map to `_`.
+        assert_eq!(sanitize_sid_for_pipe("a b.c:d"), "a_b_c_d");
+        // Hyphen and ASCII alphanumerics are preserved.
+        assert_eq!(sanitize_sid_for_pipe("Abc-123-XYZ"), "Abc-123-XYZ");
+        // Non-ASCII becomes `_` (one per char).
+        assert_eq!(sanitize_sid_for_pipe("zoé"), "zo_");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dev_sidecar_endpoint_uses_full_pipe_format() {
+        // Pin the full endpoint string, including the variable identity, so a
+        // regression in prefix/suffix or identity placement is caught.
+        let identity = sidecar_identity().expect("sidecar_identity");
+        let expected = format!("\\\\.\\pipe\\leapmux-desktop-{identity}-sidecar");
+        let actual = dev_sidecar_endpoint().expect("endpoint");
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dev_sidecar_metadata_path_joins_base_with_subdir_and_file() {
+        // Drive the path builder with a known base so the full result is
+        // pinned, not just the trailing components.
+        let base = PathBuf::from("C:\\Users\\alice\\AppData\\Local");
+        let path = dev_sidecar_metadata_path_in(&base);
+        assert_eq!(
+            path,
+            PathBuf::from("C:\\Users\\alice\\AppData\\Local")
+                .join("leapmux-desktop")
+                .join("sidecar.json")
         );
     }
 

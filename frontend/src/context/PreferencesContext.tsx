@@ -6,7 +6,7 @@ import type { TerminalThemePreference } from '~/lib/terminal'
 import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { DiffView, TurnEndSound } from '~/generated/leapmux/v1/user_pb'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs, safeSetJson } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet } from '~/lib/browserStorage'
 import { setDebugEnabled } from '~/lib/logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
@@ -45,6 +45,12 @@ interface PreferencesState {
   /** Whether hidden messages are shown in the chat view (developer feature). */
   showHiddenMessages: () => boolean
   setShowHiddenMessages: (value: boolean) => void
+  /**
+   * Whether to reveal the saved file in the OS file manager after a
+   * successful download (desktop only).
+   */
+  revealAfterDownload: () => boolean
+  setRevealAfterDownload: (value: boolean) => void
   /** Resolved enter key mode. */
   enterKeyMode: () => EnterKeyMode
   setEnterKeyMode: (value: EnterKeyMode) => void
@@ -126,7 +132,7 @@ function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPreferen
   else {
     (prefs as Record<string, unknown>)[key] = value
   }
-  safeSetJson(KEY_BROWSER_PREFS, prefs)
+  localStorageSet(KEY_BROWSER_PREFS, prefs)
 }
 
 export const PreferencesProvider: ParentComponent = (props) => {
@@ -218,6 +224,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
   const setShowHiddenMessages = (value: boolean) => {
     setShowHiddenMessagesSignal(value)
     updateBrowserPref('showHiddenMessages', value || undefined)
+  }
+
+  // Default-on preference: undefined and true both mean "reveal";
+  // only an explicit `false` opts out. Mirrors the `expandAgentThoughts`
+  // shape — store `false` to opt out, `undefined` to fall back to the
+  // default.
+  const [revealAfterDownload, setRevealAfterDownloadSignal] = createSignal(
+    initialPrefs.revealAfterDownload !== false,
+  )
+  const setRevealAfterDownload = (value: boolean) => {
+    setRevealAfterDownloadSignal(value)
+    updateBrowserPref('revealAfterDownload', value ? undefined : false)
   }
 
   const [enterKeyMode, setEnterKeyModeSignal] = createSignal<EnterKeyMode>(
@@ -346,6 +364,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setExpandAgentThoughts,
       showHiddenMessages,
       setShowHiddenMessages,
+      revealAfterDownload,
+      setRevealAfterDownload,
       enterKeyMode,
       setEnterKeyMode,
       customKeybindings,

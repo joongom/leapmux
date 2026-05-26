@@ -2,6 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
+import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
@@ -48,6 +49,10 @@ export interface SectionDefContext {
   onTabClick?: (type: number, id: string) => void
   tabItemOps?: TabItemOps
   onExpandWorkspace?: (workspaceId: string) => void
+  /** Tile ids in top-left-first traversal order for `workspaceId`. */
+  getTileOrderForWorkspace?: (workspaceId: string) => string[]
+  onChangeBranch?: (ref: BranchRef) => void
+  onDeleteBranch?: (ref: BranchRef) => void
 
   // Files section
   workerId: string
@@ -153,9 +158,13 @@ export function buildSectionDef(
           activeTabKey={ctx.tabStore?.state.activeTabKey ?? null}
           getTabsForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.tabs ?? []}
           getActiveTabKeyForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.activeTabKey ?? null}
+          getTileOrderForWorkspace={(wsId: string) => ctx.getTileOrderForWorkspace?.(wsId) ?? []}
           onTabClick={ctx.onTabClick ?? (() => {})}
           tabItemOps={ctx.tabItemOps}
           onExpandWorkspace={ctx.onExpandWorkspace}
+          workerInfoFn={ctx.workerInfoFn}
+          onChangeBranch={ctx.onChangeBranch}
+          onDeleteBranch={ctx.onDeleteBranch}
         />
       ),
     }
@@ -229,13 +238,27 @@ export function buildSectionDef(
       visible: ctx.showTodos,
       draggable: true,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      railBadge: () => (
-        <span class={csStyles.railBadgeText}>
-          {ctx.activeTodos.filter(t => t.status === 'completed').length}
-          /
-          {ctx.activeTodos.length}
-        </span>
-      ),
+      railBadge: () => {
+        // Single pass: numerator counts completed, denominator counts
+        // everything except deleted tombstones (so soft-deleted rows
+        // don't inflate the "X of Y" reading).
+        let completed = 0
+        let visible = 0
+        for (const t of ctx.activeTodos) {
+          if (t.status === 'deleted')
+            continue
+          visible++
+          if (t.status === 'completed')
+            completed++
+        }
+        return (
+          <span class={csStyles.railBadgeText}>
+            {completed}
+            /
+            {visible}
+          </span>
+        )
+      },
       content: () => <TodoList todos={ctx.activeTodos} />,
     }
   }
