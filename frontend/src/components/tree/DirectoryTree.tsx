@@ -28,6 +28,7 @@ import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { downloadFileFromWorker, openFileInNewTab } from '~/lib/fileDownload'
 import { formatBytes } from '~/lib/formatBytes'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
+import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
@@ -652,8 +653,7 @@ const TreeNode: Component<{
     // so that wrapperRef has its full height when we measure.
     // When prefers-reduced-motion is enabled, transitions are instant
     // so transitionend never fires — use requestAnimationFrame instead.
-    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (prefersReducedMotion) {
+    if (prefersReducedMotion()) {
       requestAnimationFrame(doScroll)
       return
     }

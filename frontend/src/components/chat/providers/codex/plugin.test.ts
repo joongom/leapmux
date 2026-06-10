@@ -4,11 +4,25 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../controls/CodexControlRequest'
+import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
+import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './settings'
 
 // Side-effect import to register the Codex plugin.
 import './plugin'
+
+describe('codex provider capabilities', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('seeds the default collaboration mode as extra settings on a new agent', () => {
+    expect(plugin.defaultExtraSettings).toEqual({ [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE })
+  })
+
+  it('preserves an option selection alongside the free-text note', () => {
+    expect(plugin.preservesSelectionNotes).toBe(true)
+  })
+})
 
 describe('codex extractQuotableText', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
@@ -129,15 +143,18 @@ describe('codex classify', () => {
   })
 
   it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
+    const contextCleared = { type: 'context_cleared' }
     const wrapper = {
       old_seqs: [],
       messages: [
         { method: 'thread/started', params: { threadId: 'thread-1' } },
-        { type: 'context_cleared' },
+        contextCleared,
       ],
     }
+    // thread/started is a hidden lifecycle event, so it is dropped from the
+    // rendered messages; the visible context_cleared keeps the thread alive.
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
+    expect(result).toEqual({ kind: 'notification', messages: [contextCleared] })
   })
 
   it('classifies wrapped raw thread/compacted (Phase 4.3) as a notification thread', () => {
@@ -146,7 +163,7 @@ describe('codex classify', () => {
       messages: [{ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }],
     }
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).toBe('notification_thread')
+    expect(result.kind).toBe('notification')
   })
 
   it('classifies wrapped raw item/started+contextCompaction (Phase 4.2) as a notification thread', () => {
@@ -158,7 +175,7 @@ describe('codex classify', () => {
       }],
     }
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).toBe('notification_thread')
+    expect(result.kind).toBe('notification')
   })
 
   it('does NOT classify wrapped item/started for non-compaction items as a notification thread', () => {
@@ -170,12 +187,15 @@ describe('codex classify', () => {
       }],
     }
     // commandExecution is rendered through the assistant span flow, not the
-    // notification thread. Wrapping it must not turn it into a notif thread.
+    // notification thread. Wrapping it must not turn it into a notification.
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).not.toBe('notification_thread')
+    expect(result.kind).not.toBe('notification')
   })
 
-  it('preserves wrapped skills and remote-control metadata in notification thread messages', () => {
+  it('collapses a thread of only hidden Codex metadata (skills + remote-control) to hidden', () => {
+    // Both are hidden lifecycle methods that render nothing; a thread of only
+    // such entries must collapse to hidden rather than surface a `notification`
+    // that renders no rows and falls back to a raw-JSON bubble.
     const wrapper = {
       old_seqs: [],
       messages: [
@@ -184,10 +204,10 @@ describe('codex classify', () => {
       ],
     }
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
+    expect(result).toEqual({ kind: 'hidden' })
   })
 
-  it('preserves hidden Codex metadata alongside visible notification thread entries', () => {
+  it('drops hidden Codex metadata but keeps the visible notification thread entry', () => {
     const settingsChanged = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
     const wrapper = {
       old_seqs: [],
@@ -197,11 +217,16 @@ describe('codex classify', () => {
         { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
       ],
     }
+    // The hidden metadata is filtered from the rendered messages (the full
+    // wrapper is still preserved for "Copy Raw JSON" via parsed.rawText); only
+    // the visible settings_changed survives.
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
+    expect(result).toEqual({ kind: 'notification', messages: [settingsChanged] })
   })
 
-  it('classifies wrapped thread/tokenUsage/updated and thread/name/updated as a notification thread', () => {
+  it('collapses a thread of only thread/name/updated + thread/tokenUsage/updated to hidden', () => {
+    // Both are hidden lifecycle methods, so the consolidated thread is hidden --
+    // matching how each is hidden when it arrives standalone.
     const wrapper = {
       old_seqs: [],
       messages: [
@@ -210,7 +235,7 @@ describe('codex classify', () => {
       ],
     }
     const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).toBe('notification_thread')
+    expect(result).toEqual({ kind: 'hidden' })
   })
 
   it('keeps high-usage rate limit notifications visible', () => {
@@ -226,7 +251,7 @@ describe('codex classify', () => {
       },
     }
     const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification' })
+    expect(result).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies MCP startup starting notifications as visible', () => {
@@ -234,7 +259,7 @@ describe('codex classify', () => {
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies MCP startup terminal notifications as visible', () => {
@@ -243,20 +268,20 @@ describe('codex classify', () => {
         method: 'mcpServer/startupStatus/updated',
         params: { name: 'codex_apps', status, error: status === 'failed' ? 'boom' : null },
       }
-      expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+      expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
     }
   })
 
   it('classifies compacting as notification', () => {
     const parent = { type: 'compacting' }
     const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification' })
+    expect(result).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies compact_boundary system messages as notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
     const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification' })
+    expect(result).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies turn/plan/updated as a Codex tool-use message', () => {
@@ -353,6 +378,56 @@ describe('codex classify', () => {
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 
+  it('hides a standalone thread/settings/updated notification', () => {
+    // Codex emits this whenever thread settings change (model, effort, sandbox,
+    // etc.); it carries no chat-worthy content, so it is a hidden lifecycle event.
+    const parent = {
+      method: 'thread/settings/updated',
+      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5', effort: 'xhigh' } },
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a thread/settings/updated consolidated into a notification thread', () => {
+    const settingsUpdated = {
+      method: 'thread/settings/updated',
+      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
+    }
+    const wrapper = { old_seqs: [6], messages: [settingsUpdated] }
+    expect(plugin.classify(input(settingsUpdated, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a standalone terminal compaction status (status=null, compact_result=success)', () => {
+    const parent = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a terminal compaction status when consolidated into a notification thread', () => {
+    // Parity with the standalone classifier and with Claude: a status hidden on
+    // its own stays hidden once Hub threads it, instead of leaking as raw JSON.
+    const statusMsg = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
+    const wrapper = { old_seqs: [305], messages: [statusMsg] }
+    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps the in-progress compacting status visible standalone and consolidated', () => {
+    const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
+    expect(plugin.classify(input(compactingMsg))).toEqual({ kind: 'notification', messages: [compactingMsg] })
+    const wrapper = { old_seqs: [305], messages: [compactingMsg] }
+    expect(plugin.classify(input(compactingMsg, wrapper))).toEqual({ kind: 'notification', messages: [compactingMsg] })
+  })
+
+  it('drops a hidden thread/settings/updated from a thread but keeps the visible entry', () => {
+    const settingsUpdated = {
+      method: 'thread/settings/updated',
+      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
+    }
+    const contextCleared = { type: 'context_cleared' }
+    const wrapper = { old_seqs: [5, 6], messages: [settingsUpdated, contextCleared] }
+    expect(plugin.classify(input(settingsUpdated, wrapper)))
+      .toEqual({ kind: 'notification', messages: [contextCleared] })
+  })
+
   it('hides assistant interrupt echo messages with top-level string content', () => {
     const parent = {
       role: 'assistant',
@@ -423,12 +498,37 @@ describe('codex result divider', () => {
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 
-  it('renders result_divider via renderMessage', () => {
-    const parsed = {
-      turn: { id: 'turn-1', status: 'completed' },
-    }
-    const { container } = render(() => plugin.renderMessage!({ kind: 'result_divider' }, parsed))
-    expect(container.textContent).toContain('Turn completed')
+  it('maps a completed turn to a "Turn completed" divider model', () => {
+    expect(plugin.resultDivider!({ turn: { id: 'turn-1', status: 'completed' } }))
+      .toEqual({ label: 'Turn completed' })
+  })
+
+  it('maps a failed turn to a danger divider with the error inline', () => {
+    expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } }))
+      .toEqual({ label: 'Boom — timeout', isError: true })
+  })
+
+  it('falls back to "Unknown error" for a failed turn whose error.message is empty', () => {
+    // An explicit empty-string message is a present string, so pickString's
+    // missing-key fallback does not apply -- guard with `|| 'Unknown error'` so
+    // the divider never renders a label-less red row.
+    expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: '' } } }))
+      .toEqual({ label: 'Unknown error', isError: true })
+  })
+
+  it('returns null when the turn carries no status', () => {
+    expect(plugin.resultDivider!({ turn: {} })).toBeNull()
+  })
+
+  it('renders a failed turn as a danger divider through the shared renderer end-to-end', () => {
+    // MessageBubble routes result_divider through renderResultDivider, which draws
+    // the shared ResultDivider with the inline danger color for a failed turn.
+    const { text, isError } = renderDivider(
+      { turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } },
+      AgentProvider.CODEX,
+    )
+    expect(text).toBe('Boom — timeout')
+    expect(isError).toBe(true)
   })
 })
 

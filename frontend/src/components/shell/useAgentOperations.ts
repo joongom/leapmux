@@ -1,5 +1,6 @@
 import type { TabContext } from './tabContext'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -7,16 +8,15 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { PermissionMode } from '~/utils/controlResponse'
 
+import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createSignal, on } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
-import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex/settings'
 import { providerFor } from '~/components/chat/providers/registry'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
-import { toastCloseFailure } from '~/components/shell/closeFailureToast'
+import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -103,6 +103,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
+      // Per-provider seed settings for a fresh agent (e.g. Codex's collaboration
+      // mode); the plugin owns what, if anything, to send.
+      const extraSettings = providerFor(agentProvider)?.defaultExtraSettings
       // Title left empty: the worker picks "Agent <Name>" server-side
       // so CLI and UI paths share one pool (see worker/service/
       // tab_names.go). The response carries the resolved title back.
@@ -113,7 +116,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         systemPrompt: '',
         workerId,
         workingDir,
-        ...(agentProvider === AgentProvider.CODEX ? { extraSettings: { [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE } } : {}),
+        ...(extraSettings ? { extraSettings } : {}),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
@@ -399,7 +402,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // the caller returns. The worker close RPC and Hub unregister are
   // fire-and-forget; failures are surfaced via toast without blocking
   // the UI or rolling back the local state — the tab is already gone.
-  const handleAgentClose = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
+  const handleAgentClose = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
     const workerId = getAgentWorkerId(agentId)
 
     // Synchronous local cleanup: the tab disappears immediately.
@@ -407,21 +410,22 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     clearAttachments(agentId)
     props.tabStore.removeTab(TabType.AGENT, agentId)
 
-    // Background: kill the subprocess, DB-close the agent, optionally
-    // remove the worktree. Partial failures come back as a non-empty
-    // failure_message on the response.
-    if (workerId) {
-      workerRpc.closeAgent(workerId, { agentId, worktreeAction })
-        .then(resp => toastCloseFailure(resp.result))
-        .catch((err) => {
-          showWarnToast('Failed to close agent', err)
-        })
-    }
-
     // `tabStore.removeTab` above emitted the TombstoneTab op via the
     // CRDT bridge; the hub broadcasts it to peer clients via
     // /ws/orgevents.
-    void agentId
+    if (!workerId) {
+      // No worker to send the close to. The local tab is gone, but a
+      // REMOVE can't reach the worker — say so rather than letting the
+      // caller assume the worktree was removed.
+      warnWorktreeUnreachable(worktreeAction)
+      return Promise.resolve(undefined)
+    }
+
+    // Background: kill the subprocess, DB-close the agent, optionally
+    // remove the worktree. Partial failures come back as a non-empty
+    // failure_message on the response; the resolved result lets the
+    // delete-branch flow report the actual worktree outcome.
+    return awaitCloseResult(workerRpc.closeAgent(workerId, { agentId, worktreeAction }), 'Failed to close agent')
   }
 
   return {

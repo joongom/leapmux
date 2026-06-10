@@ -767,7 +767,7 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	return nil
 }
 
-func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) error {
+func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
 	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.plugin, source, content)
 }
 
@@ -1036,6 +1036,22 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 	})
 }
 
+// thinkingTokensSessionInfoKey is the agent_session_info key carrying Claude's
+// per-turn thinking-token estimate. Unlike cost/rate-limit/context-usage keys
+// (which carry meaningfully across turns and benefit from dedup), this is a
+// per-turn running count the frontend clears at several boundaries the worker
+// can't all observe (the turn-end divider, each interleaved thinking phase, a
+// pause for input). Deduping it here would suppress a re-broadcast of a value
+// the frontend already cleared -- leaving the counter hidden until a strictly
+// different estimate arrives. It streams unique monotonic values normally and
+// the frontend store dedups identical updates itself, so BroadcastSessionInfo
+// skips the dedup cache for this one key entirely (always ship, never cache).
+//
+// Sourced from the agent package's broadcast key so the exemption keys off the
+// exact same string the Claude handler ships, instead of a hand-copied literal
+// that could silently drift and re-enable the dedup.
+const thinkingTokensSessionInfoKey = agent.SessionInfoKeyThinkingTokens
+
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
 // but only for keys whose values changed since the previous broadcast.
 // Agent handlers commonly re-emit identical payloads (Pi especially,
@@ -1062,6 +1078,13 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 	}
 	changed := make(map[string]interface{}, len(info))
 	for k, v := range info {
+		// thinking_tokens is exempt from dedup -- always ship it and never cache
+		// it, so a re-broadcast after a frontend-side clear is never suppressed.
+		// See thinkingTokensSessionInfoKey.
+		if k == thinkingTokensSessionInfoKey {
+			changed[k] = v
+			continue
+		}
 		encoded, err := json.Marshal(v)
 		if err != nil {
 			// Can't dedup without canonical bytes — pass through.
@@ -1129,6 +1152,20 @@ func (h *OutputHandler) clearNotifThread(agentID string) {
 	h.lastNotifThread.Delete(agentID)
 }
 
+// createMessageRow persists a chat-message row, refusing an UNSPECIFIED agent
+// provider. Every persisted message must carry a real provider so the client can
+// render it through that provider's renderers; an UNSPECIFIED provider is a
+// persistence bug (the frontend surfaces such a row as `unsupported_provider`).
+// Catch it here at the DB boundary so the malformed row is never written,
+// whichever write path produced it -- the agent open path already defaults an
+// unspecified request to a real provider, so this should never fire in practice.
+func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessageParams) (int64, error) {
+	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return 0, fmt.Errorf("refusing to persist message %q for agent %q with UNSPECIFIED agent provider", params.ID, params.AgentID)
+	}
+	return q.CreateMessage(ctx, params)
+}
+
 // persistAndBroadcast persists a message and broadcasts it to watchers.
 // tracker may be nil, in which case it is resolved from the agentID.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte, span agent.SpanInfo, tracker *SpanTracker) error {
@@ -1152,7 +1189,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	compressed, compressionType := msgcodec.Compress(contentJSON)
 	now := time.Now()
 
-	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
+	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
 		Source:             source,
@@ -1609,8 +1646,11 @@ func (c *agentTodoCache) itemsEqual(other []todoevents.Item) bool {
 }
 
 // persistNotificationThreaded persists a notification message, appending it
-// to the current notification thread if one exists.
-func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, contentJSON []byte) error {
+// to the current notification thread if one exists. It reports whether the
+// notification produced a frontend-visible broadcast (false when a flapping
+// notification collapses byte-identically into the existing thread tail and the
+// broadcast is skipped).
+func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
@@ -1620,9 +1660,9 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		err := h.appendToNotificationThread(agentID, agentProvider, plugin, threadRef, source, contentJSON)
+		broadcast, err := h.appendToNotificationThread(agentID, agentProvider, plugin, threadRef, source, contentJSON)
 		if err == nil {
-			return nil
+			return broadcast, nil
 		}
 		// errSourceMismatch is the documented fall-through signal — start a
 		// fresh standalone thread silently. Any other error is a real failure
@@ -1643,18 +1683,19 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 var errSourceMismatch = errors.New("notification thread source mismatch")
 
 // appendToNotificationThread appends a message to an existing notification thread.
-// Returns an error if the thread's source does not match the new
-// notification's source — adjacent cross-source notifications must
-// produce separate threads so that the persisted source remains a
-// truthful per-thread provenance signal. The caller treats the error
-// as a normal "fall through to a new standalone thread" signal, not as
-// a failure.
-func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, threadRef *notifThreadRef, source leapmuxv1.MessageSource, contentJSON []byte) error {
+// Returns whether a frontend-visible broadcast was emitted (false when the
+// notification collapses byte-identically into the existing tail), and an error
+// if the thread's source does not match the new notification's source — adjacent
+// cross-source notifications must produce separate threads so that the persisted
+// source remains a truthful per-thread provenance signal. The caller treats the
+// error as a normal "fall through to a new standalone thread" signal, not as a
+// failure.
+func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, threadRef *notifThreadRef, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
 	// Short-circuit cross-source flips before the DB hit — the in-memory
 	// threadRef carries the source that was persisted when the thread
 	// opened, so we don't need to fetch + decompress the row to learn it.
 	if threadRef.source != source {
-		return errSourceMismatch
+		return false, errSourceMismatch
 	}
 
 	parentRow, err := h.queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
@@ -1662,27 +1703,29 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		AgentID: agentID,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	parentData, err := msgcodec.Decompress(parentRow.Content, parentRow.ContentCompression)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	wrapper, err := unwrapNotifContent(parentData)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// If a flapping ProviderScoped notification (e.g.
 	// remoteControl/status/changed) collapses into the existing tail and
-	// produces a byte-identical slice, skip the DB write + broadcast.
+	// produces a byte-identical slice, skip the DB write + broadcast. The
+	// false return tells the reset decorator no frontend clear fired, so it must
+	// not reset the thinking-token estimate for this collapsed notification.
 	oldMessages := wrapper.Messages
 	nextMessages := append(slices.Clone(oldMessages), contentJSON)
 	nextMessages = consolidateNotificationThread(nextMessages, plugin)
 	if rawMessageSlicesEqual(oldMessages, nextMessages) {
-		return nil
+		return false, nil
 	}
 
 	wrapper.Messages = nextMessages
@@ -1693,7 +1736,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 
 	merged, err := json.Marshal(wrapper)
 	if err != nil {
-		return fmt.Errorf("marshal notification thread: %w", err)
+		return false, fmt.Errorf("marshal notification thread: %w", err)
 	}
 
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
@@ -1712,7 +1755,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		AgentID:            agentID,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	threadRef.seq = newSeq
@@ -1730,11 +1773,12 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		SpanLines:          spanLines,
 	})
 
-	return nil
+	return true, nil
 }
 
 // createNotificationStandalone creates a new standalone notification message.
-func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte) error {
+// It always broadcasts on success, so it reports broadcast=true.
+func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
 	msgID := id.Generate()
 	wrapped := wrapNotifContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
@@ -1744,7 +1788,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 	// passthrough vertical bars instead of breaking the column.
 	spanLines := h.snapshotPassthroughSpanLines(agentID)
 
-	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
+	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
 		Source:             source,
@@ -1759,7 +1803,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		CreatedAt:          now,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	h.lastNotifThread.Store(agentID, &notifThreadRef{
@@ -1779,7 +1823,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Depth:              0,
 		SpanLines:          spanLines,
 	})
-	return nil
+	return true, nil
 }
 
 // broadcastMessage broadcasts a single agent message event to all watchers.
@@ -1820,7 +1864,7 @@ func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := h.persistNotificationThreaded(agentID, agentProvider, agent.ProviderFor(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
+	if _, err := h.persistNotificationThreaded(agentID, agentProvider, agent.ProviderFor(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }
@@ -1929,6 +1973,16 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 		// Path and title unchanged — content differed (we wouldn't be here
 		// otherwise), but the user-visible header is the same. The new
 		// file is already on disk; no notification needed.
+		return
+	}
+
+	// A plan with no title — no first line we could extract and no prior
+	// plan_title to fall back to — has nothing meaningful to announce. The
+	// client renders "Plan updated:" with an empty title as a raw-JSON bubble
+	// (plan_updated needs a title to form its label), so a titleless
+	// notification is pure noise. The plan file and the agents row are already
+	// written above; only the user-facing notification is skipped.
+	if title == "" {
 		return
 	}
 

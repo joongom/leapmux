@@ -1,3 +1,4 @@
+import type { Provider } from '~/components/chat/providers/registry'
 import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
@@ -9,6 +10,7 @@ import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
+import { providerFor } from '~/components/chat/providers/registry'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
@@ -17,12 +19,13 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { waitForStreamCompletion } from '~/hooks/streamCompletion'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
+import { extractAssistantUsage, extractCodexTokenUsage, extractCompactionContextTokens, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
 import { createExponentialBackoff } from '~/lib/retry'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
+import { compactionContextUsage } from '~/stores/agentSession.store'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
@@ -64,6 +67,60 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
     out[key] = info
   }
   return out
+}
+
+/**
+ * Translate an `agent_session_info` wire payload (provider-agnostic snake_case)
+ * into the store's camelCase `AgentSessionInfo` updates. Each field carries its
+ * own predicate + transform and is included only when present/valid, so a
+ * provider that omits keys (or sends a dropped-only payload) produces an empty
+ * object and the caller skips the store write. Pure and exported so the
+ * wire->camel boundary can be unit-tested directly without a live connection.
+ */
+export function wireSessionInfoToUpdates(
+  info: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const updates: Record<string, unknown> = {}
+  if (!info)
+    return updates
+  if (typeof info.total_cost_usd === 'number')
+    updates.totalCostUsd = info.total_cost_usd
+  const contextUsage = normalizeContextUsage(info.context_usage)
+  if (contextUsage)
+    updates.contextUsage = contextUsage
+  if (info.rate_limits !== undefined)
+    updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
+  if (info.codex_turn_id !== undefined)
+    updates.codexTurnId = info.codex_turn_id as string
+  if (info.streaming_type !== undefined)
+    updates.streamingType = info.streaming_type as string
+  // Only positive estimates: `> 0` rejects both the zero-estimate first delta
+  // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
+  // false), so the indicator never has to defend against "0 tokens" or a NaN
+  // serialized to null in storage.
+  if (typeof info.thinking_tokens === 'number' && info.thinking_tokens > 0)
+    updates.thinkingTokens = info.thinking_tokens
+  return updates
+}
+
+// shouldClearThinkingTokensForMessage decides whether a persisted message should
+// drop the live thinking-token estimate. Non-AGENT entries (user echoes such as
+// queued input or tool_result, and LeapMux notifications) can land mid-think and
+// must never clear a climbing counter, so they are rejected here universally. For
+// AGENT messages the per-provider policy is delegated to the provider plugin's
+// clearsThinkingTokensForMessage hook; the default (no hook) is "main-scope only"
+// -- clear when parentSpanId === '' -- so a collab subagent's nested commit does
+// not reset the primary counter (Claude overrides to always clear). The resolved
+// plugin is passed in so this stays a pure, registry-free unit.
+export function shouldClearThinkingTokensForMessage(
+  msg: { source: MessageSource, parentSpanId: string },
+  plugin: Pick<Provider, 'clearsThinkingTokensForMessage'> | undefined,
+): boolean {
+  if (msg.source !== MessageSource.AGENT)
+    return false
+  if (plugin?.clearsThinkingTokensForMessage)
+    return plugin.clearsThinkingTokensForMessage(msg)
+  return msg.parentSpanId === ''
 }
 
 export interface WorkspaceConnectionParams {
@@ -188,18 +245,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // forcing snake_case identifiers throughout the frontend.
         if (parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === 'agent_session_info') {
           const info = parsed.topLevel.info as Record<string, unknown> | undefined
-          const updates: Record<string, unknown> = {}
-          if (typeof info?.total_cost_usd === 'number')
-            updates.totalCostUsd = info.total_cost_usd
-          const contextUsage = normalizeContextUsage(info?.context_usage)
-          if (contextUsage)
-            updates.contextUsage = contextUsage
-          if (info?.rate_limits !== undefined)
-            updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
-          if (info?.codex_turn_id !== undefined)
-            updates.codexTurnId = info.codex_turn_id as string
-          if (info?.streaming_type !== undefined)
-            updates.streamingType = info.streaming_type as string
+          const updates = wireSessionInfoToUpdates(info)
+          // A zero (or, defensively, negative) thinking-token estimate is the
+          // backend's per-phase reset signal — the first delta of a thinking
+          // phase reports 0. Honor it as a clear so a stale count from a prior
+          // phase/turn can't linger; the positive path keeps streaming via
+          // `updates`. wireSessionInfoToUpdates only forwards positive estimates,
+          // so a 0 never arrives as an update and must be handled here.
+          if (typeof info?.thinking_tokens === 'number' && info.thinking_tokens <= 0)
+            agentSessionStore.clearThinkingTokens(agentId)
           // Pi (and any future provider) may broadcast session_info
           // payloads whose keys are all dropped here — skip the store
           // write so reactive consumers aren't woken for nothing.
@@ -222,6 +276,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (innerType === 'context_cleared') {
             agentSessionStore.clearContextUsage(agentId)
             chatStore.clearTodos(agentId)
+            // The conversation was wiped; drop any in-flight thinking-token
+            // estimate too. The backend resets its own estimator on a context
+            // clear, but that reset is in-memory only (no broadcast), so the
+            // counter would otherwise linger frozen on its last value until the
+            // next turn produces a delta or a clear of its own.
+            agentSessionStore.clearThinkingTokens(agentId)
           }
 
           if (innerType === 'rate_limit_event' || innerMethod === CODEX_RATE_LIMITS_METHOD) {
@@ -238,6 +298,26 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const codexUsage = extractCodexTokenUsage(parsed)
             if (codexUsage)
               agentSessionStore.updateInfo(agentId, codexUsage as Record<string, unknown>)
+          }
+
+          // A completed compaction boundary makes the prior context-usage
+          // reading stale: the grid would keep showing the pre-compaction size
+          // until the next assistant/result message overwrites it. Refresh it
+          // straight from the boundary's post-compaction token count
+          // (post_tokens, or pre - tokens_saved), and reset the component fields
+          // since the boundary carries no input/cache breakdown -- contextTokens
+          // is authoritative for the grid. Preserve the known context window so
+          // the percentage denominator survives. Boundaries arrive consolidated
+          // (wrapper) or, when live and standalone, as a bare system message;
+          // gate on those shapes so common assistant messages skip the scan.
+          if (parsed.wrapper !== null || innerType === 'system' || innerMethod === 'thread/compacted') {
+            const postTokens = extractCompactionContextTokens(parsed)
+            if (postTokens !== undefined) {
+              const existing = agentSessionStore.getInfo(agentId).contextUsage
+              agentSessionStore.updateInfo(agentId, {
+                contextUsage: compactionContextUsage(postTokens, existing),
+              })
+            }
           }
 
           if (innerType === 'settings_changed') {
@@ -267,6 +347,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
 
         chatStore.addMessage(agentId, msg)
+        // Main-agent output means the current thinking phase produced something,
+        // so drop the live thinking-token estimate — otherwise the counter lingers
+        // beside the indicator (frozen on its last value) until turn end, and the
+        // next thinking phase would briefly flash the stale total before its own
+        // deltas arrive. No-op when no estimate is set.
+        //
+        // INTENTIONAL per-phase reset: this also fires on an intermediate persisted
+        // reasoning block (Claude `assistant_thinking`) during interleaved thinking
+        // (think -> tool -> think), so the counter restarts from each new phase's
+        // first delta rather than accumulating across a whole turn. That per-phase
+        // semantics is the desired behavior — do not "fix" it to only clear at true
+        // turn boundaries. See shouldClearThinkingTokensForMessage for the
+        // source/subagent/Claude gating rationale.
+        if (shouldClearThinkingTokensForMessage(msg, providerFor(msg.agentProvider)))
+          agentSessionStore.clearThinkingTokens(agentId)
         if (
           !isAgentTabVisible(agentId)
           && chatStore.getMessages(agentId).length > MAX_BACKGROUND_CHAT_MESSAGES
@@ -331,6 +426,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // type:"result", Codex turn/completed, ACP stopReason, Pi agent_end)
         // as `result_divider`, so this gate is provider-agnostic.
         if (category.kind === 'result_divider') {
+          // Clear the per-turn thinking-token estimate on the turn-end divider
+          // itself, not just via the AGENT-message clear above. The divider is
+          // the structural turn boundary for every provider; gating the clear on
+          // message source/status would miss a terminal envelope whose source is
+          // not AGENT, or a catch-up replay where the INACTIVE-driven onTurnEnd
+          // is skipped — leaving the counter frozen on its last value.
+          agentSessionStore.clearThinkingTokens(agentId)
           const modelId = tabStore.getAgentTab(agentId)?.model
           const meta = extractResultMetadata(parsed, modelId)
           if (meta) {
@@ -521,6 +623,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           // so the user can send a regular message (which auto-starts the
           // agent) instead of being stuck on an unanswerable prompt.
           controlStore.clearAgent(agentId)
+          // Drop the per-turn thinking-token estimate; the agent stopped, so
+          // there is no live thinking to count.
+          agentSessionStore.clearThinkingTokens(agentId)
           if (
             catchUpPhase === 'live'
             && sc.agentSessionId
@@ -565,6 +670,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (tabStore.state.activeTabKey !== tabKey({ type: TabType.AGENT, id: cr.agentId })) {
             tabStore.setNotification(TabType.AGENT, cr.agentId, true)
           }
+          // The agent paused mid-turn to wait on the user (permission / plan
+          // prompt). It is no longer thinking, and this pause may produce no
+          // agent message and no INACTIVE, so drop the per-turn estimate here
+          // too — otherwise the counter lingers frozen until the next turn.
+          agentSessionStore.clearThinkingTokens(agentId)
           params.onTurnEnd?.(agentId)
         }
         break

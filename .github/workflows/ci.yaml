@@ -11,12 +11,16 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Opt arduino/setup-protoc, arduino/setup-task, and bufbuild/buf-setup-action
-  # into Node.js 24 ahead of GitHub's June 2 2026 forced switch — those three
-  # still ship `using: node20` in their action.yml. Drop this once they cut
-  # Node-24 releases (or once the forced-switch date passes and the override
-  # becomes a no-op).
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Shrink the desktop/rust debug artifacts that `cargo test` (dev profile)
+  # bakes into the cached `target/` -- full DWARF debuginfo is the single
+  # largest slice of the Swatinem/rust-cache blob. `line-tables-only` keeps
+  # file/line numbers in panic backtraces (so test failures stay
+  # diagnosable) while dropping the variable/type info nobody reads in CI.
+  # Set here, not in desktop/rust/Cargo.toml, so local builds keep full debug
+  # for debuggers. MUST stay identical to desktop-artifacts.yaml: every
+  # CARGO_* var is hashed into the rust-cache key, so a mismatch would split
+  # the `shared-key: desktop` cache the two workflows are meant to share.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   linux:
@@ -142,6 +146,12 @@ jobs:
         with:
           workspaces: desktop/rust
           shared-key: desktop
+          # Only push-to-main writes the cache. Otherwise every PR build saves
+          # its own ~1.3 GB blob under the shared `desktop` key, and they evict
+          # each other against GitHub's 10 GB per-repo cache limit. PRs still
+          # *restore* main's cache (the expensive dep compile is reused); they
+          # just don't pay to save a near-duplicate.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
         # The cached ~/.cache/tauri contents (linuxdeploy AppImage, the
@@ -336,11 +346,13 @@ jobs:
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
+        # save-if.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/rust
           shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
         uses: actions/cache@v5
@@ -437,11 +449,13 @@ jobs:
           components: clippy
 
       - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
+        # save-if.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/rust
           shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
         uses: actions/cache@v5

@@ -346,9 +346,11 @@ globalStyle('ot-dropdown hr', {
   margin: 'var(--space-2) 0',
 })
 
-// Remove italic from blockquotes (Oat default).
+// Blockquotes: keep Oat's italic, but lift the color from the faint
+// --muted-foreground to roughly halfway toward body text, so the quote reads
+// clearly without being as loud as normal text.
 globalStyle('blockquote', {
-  fontStyle: 'normal',
+  color: 'color-mix(in oklab, var(--foreground), var(--muted-foreground))',
 })
 
 // Enable native width/height: auto transitions (progressive enhancement).

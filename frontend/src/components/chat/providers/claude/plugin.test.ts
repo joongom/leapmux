@@ -6,6 +6,18 @@ import { input } from '../testUtils'
 // Side-effect import to register the Claude plugin.
 import './plugin'
 
+describe('claude clearsThinkingTokensForMessage', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('always clears, even for a non-empty parentSpanId (telemetry-driven counter)', () => {
+    // Claude's parentSpanId is not a clean main-vs-subagent signal (a
+    // system-injected tool_use_id yields a non-empty parentSpanId on a main-agent
+    // message), so it must not gate on it like the estimator providers do.
+    expect(plugin.clearsThinkingTokensForMessage!({ parentSpanId: '' })).toBe(true)
+    expect(plugin.clearsThinkingTokensForMessage!({ parentSpanId: 'sys-tu-999' })).toBe(true)
+  })
+})
+
 describe('claude extractQuotableText', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 
@@ -83,7 +95,10 @@ describe('claude classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
-  it('hides the /context local-command result (already shown as an assistant bubble)', () => {
+  it('classifies the /context local-command result as a divider, not hidden', () => {
+    // The redundant-with-the-assistant-bubble and danger-styling concerns are
+    // both handled by the result_divider renderer (claudeResultDivider), so the
+    // classifier keeps every result a turn-end divider (see ./notifications.test.tsx).
     const parent = {
       type: 'result',
       subtype: 'success',
@@ -92,15 +107,6 @@ describe('claude classify', () => {
       stop_reason: null,
       result: '## Context Usage\n\n**Model:** claude-opus-4-8[1m]\n',
       duration_ms: 2062,
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('does not hide an error result even when its text starts with the context-usage header', () => {
-    const parent = {
-      type: 'result',
-      is_error: true,
-      result: '## Context Usage\nboom',
     }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
@@ -193,5 +199,60 @@ describe('claude classify', () => {
     }
     expect(plugin.classify({ ...input(parent), spanType: 'TaskList' }))
       .toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a terminal compaction status (status=null, compact_result=success) standalone', () => {
+    // The user-facing "Context compacted (...)" line comes from the separate
+    // compact_boundary message; this terminal status carries nothing to show.
+    const parent = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'success',
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a terminal compaction status when Hub consolidates it into a notification thread', () => {
+    // Regression: the consolidated-thread branch must apply the same per-message
+    // hidden rules as the standalone classifier. Before the shared predicate, a
+    // status message that is hidden on its own leaked through the wrapper path as
+    // a `notification` and rendered as raw JSON.
+    const statusMsg = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'success',
+    }
+    const wrapper = { old_seqs: [305], messages: [statusMsg] }
+    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('drops a hidden status from a consolidated thread but keeps the visible notification', () => {
+    const settingsMsg = {
+      type: 'settings_changed',
+      changes: { model: { old: 'a', new: 'b' } },
+    }
+    const statusMsg = { type: 'system', subtype: 'status', status: null }
+    const wrapper = { old_seqs: [301, 302], messages: [settingsMsg, statusMsg] }
+    expect(plugin.classify(input(settingsMsg, wrapper)))
+      .toEqual({ kind: 'notification', messages: [settingsMsg] })
+  })
+
+  it('keeps the in-progress compacting status visible in a consolidated thread', () => {
+    // status === 'compacting' is the live "Compacting context..." row; only the
+    // terminal (non-compacting) status is hidden.
+    const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
+    const wrapper = { old_seqs: [305], messages: [compactingMsg] }
+    expect(plugin.classify(input(compactingMsg, wrapper)))
+      .toEqual({ kind: 'notification', messages: [compactingMsg] })
+  })
+
+  it('drops an allowed rate_limit_event from a consolidated thread (regression guard)', () => {
+    const allowed = { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
+    const throttled = { type: 'rate_limit_event', rate_limit_info: { status: 'throttled', rateLimitType: 'primary' } }
+    const wrapper = { old_seqs: [310, 311], messages: [throttled, allowed] }
+    expect(plugin.classify(input(throttled, wrapper)))
+      .toEqual({ kind: 'notification', messages: [throttled] })
   })
 })
