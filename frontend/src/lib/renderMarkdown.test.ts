@@ -18,23 +18,35 @@ describe('renderMarkdown — strikethrough disabled (T5 regression)', () => {
     expect(html).toContain('text')
   })
 
-  it('"7~11월" range expression renders as plain text without strikethrough', () => {
+  it('"7~11월" range expression keeps its literal tilde (no <del>, no dropped ~)', () => {
     const html = renderMarkdown('7~11월', true)
     expect(html).not.toContain('<del')
     expect(html).not.toContain('</del>')
-    expect(html).toContain('7')
-    expect(html).toContain('11월')
+    // Regression: the tilde itself must survive — the bug rendered "711월".
+    expect(html).toContain('7~11월')
   })
 
-  it('"6~12월 범위는 1~5입니다" renders both ranges as plain text', () => {
+  it('"6~12월 범위는 1~5입니다" keeps both literal tildes', () => {
     const html = renderMarkdown('6~12월 범위는 1~5입니다', true)
     expect(html).not.toContain('<del')
     expect(html).not.toContain('</del>')
-    expect(html).toContain('6')
-    expect(html).toContain('12월')
-    expect(html).toContain('범위는')
-    expect(html).toContain('1')
-    expect(html).toContain('5입니다')
+    // Regression: the bug paired the two single tildes into a <del> and
+    // dropped them, rendering "612월 범위는 15입니다".
+    expect(html).toContain('6~12월')
+    expect(html).toContain('1~5입니다')
+  })
+
+  it('"4~6%" numeric range keeps its tilde (reported case)', () => {
+    const html = renderMarkdown('4~6%', true)
+    expect(html).not.toContain('<del')
+    expect(html).toContain('4~6%')
+  })
+
+  it('multiple single-tilde ranges in one line all keep their tildes', () => {
+    const html = renderMarkdown('성장률 4~6%, 마진 8~10%', true)
+    expect(html).not.toContain('<del')
+    expect(html).toContain('4~6%')
+    expect(html).toContain('8~10%')
   })
 
   it('gFM table still renders (positive control: only <del> was stripped, not all of GFM)', () => {

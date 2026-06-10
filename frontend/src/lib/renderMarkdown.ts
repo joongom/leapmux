@@ -93,9 +93,17 @@ function rehypeExternalLinks() {
 
 /**
  * Rehype plugin that unwraps `<del>` nodes — disables GFM strikethrough rendering.
- * `~text~` / `~~text~~` parse to `<del>` via remark-gfm; we splice the children
- * in place so range expressions like "7~11월" render as plain text without a
- * stale strikethrough or DOM/A11y artifact.
+ *
+ * With `remarkGfm({ singleTilde: false })` a single tilde no longer opens
+ * strikethrough, so range expressions like "7~11월" or "4~6%" keep their
+ * literal `~` instead of being swallowed (a `<del>` whose children we'd splice
+ * in, dropping the delimiters). Only `~~text~~` (double tilde) still parses to
+ * `<del>`; we unwrap those so the fork shows no strikethrough decoration.
+ *
+ * NOTE: the double-tilde delimiters are still dropped on unwrap (the `~~`
+ * markers are consumed by the parser before this runs). That is fine for the
+ * fork's "no strikethrough" intent; the reported bug was single-tilde ranges,
+ * fixed above by `singleTilde: false`.
  */
 function rehypeUnwrapDel() {
   return (tree: Root) => {
@@ -112,7 +120,7 @@ function rehypeUnwrapDel() {
 
 const processor = unified()
   .use(remarkParse)
-  .use(remarkGfm)
+  .use(remarkGfm, { singleTilde: false })
   .use(remarkRehype)
   .use(rehypeShikiFromHighlighter, shikiHighlighter as any, {
     themes: { light: 'github-light', dark: 'github-dark' },
@@ -125,7 +133,7 @@ const processor = unified()
 /** Fallback processor without Shiki (used when syntax highlighting fails). */
 const plainProcessor = unified()
   .use(remarkParse)
-  .use(remarkGfm)
+  .use(remarkGfm, { singleTilde: false })
   .use(remarkRehype)
   .use(rehypeExternalLinks)
   .use(rehypeUnwrapDel)
