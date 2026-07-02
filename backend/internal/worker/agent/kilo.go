@@ -2,12 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/envutil"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 const KiloPrimaryAgentCode = "code"
@@ -19,149 +15,37 @@ type KiloAgent struct {
 
 // StartKilo starts a Kilo ACP agent process and performs the handshake.
 func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "kilo", []string{"KILO_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
-	)
-
-	cmd.Env = envutil.FilterEnv(cmd.Environ(), "KILO_CLIENT")
-	if opts.LoginShell {
-		cmd.Env = append(cmd.Env, "KILO_CLIENT=1")
-	}
-	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &KiloAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "kilo", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       opts.Model,
+	return acpStart(ctx, opts, sink, acpStartSpec[KiloAgent]{
+		provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		providerName:   "kilo",
+		binaryName:     "kilo",
+		baseArgs:       []string{"acp"},
+		rcMarkerEnvKey: "KILO_CLIENT",
+		sessionConfig:  acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume},
+		newAgent:       func() *KiloAgent { return &KiloAgent{} },
+		base:           func(a *KiloAgent) *acpBase { return &a.acpBase },
+		configure: func(a *KiloAgent) {
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 		},
-	}
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndPrimaryAgent
-	a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := json.Marshal(map[string]interface{}{
-		"protocolVersion": 1,
-		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities":    map[string]interface{}{},
+		afterHandshake: func(a *KiloAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPrimaryAgentStartup(handshake, opts, KiloPrimaryAgentCode)
+		},
 	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal initialize params: %w", err)
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
-		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
-	if err != nil {
-		return nil, err
-	}
-
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, nil)
-	if a.model == "" && handshake.CurrentModelID != "" {
-		a.model = handshake.CurrentModelID
-	}
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
-		if err := a.setModel(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
-		}
-	}
-	var requestedPrimaryAgent string
-	if opts.ExtraSettings != nil {
-		requestedPrimaryAgent = opts.ExtraSettings[OptionGroupKeyPrimaryAgent]
-	}
-	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
-		cleanup()
-		return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-	}
-
-	return a, nil
 }
 
 func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: KiloPrimaryAgentCode, Name: titleCaseID(KiloPrimaryAgentCode, ""), IsDefault: true},
+		{Id: KiloPrimaryAgentCode, Name: titleCaseID(KiloPrimaryAgentCode, "")},
 		{Id: OpenCodePrimaryAgentPlan, Name: titleCaseID(OpenCodePrimaryAgentPlan, "")},
 	}
 }
 
-func (a *KiloAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string) error {
-	available := buildOpenCodePrimaryAgents(modes, currentModeID)
-	hasACPModeList := len(available) > 0
-	current := currentModeID
-	if !hasACPModeList {
-		available = fallbackKiloPrimaryAgents()
-		if current == "" {
-			current = KiloPrimaryAgentCode
-		}
-	}
-	if current == "" {
-		current = firstOpenCodePrimaryAgent(available)
-	}
-
-	a.mu.Lock()
-	a.availablePrimaryAgents = available
-	a.currentPrimaryAgent = current
-	a.mu.Unlock()
-
-	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
-		if err := a.setPrimaryAgent(requestedPrimaryAgent); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (a *KiloAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
-}
-
-func (a *KiloAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	return a.primaryAgentCurrentSettings()
-}
-
-func (a *KiloAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.primaryAgentOptionGroups(fallbackKiloPrimaryAgents())
-}
-
-func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return a.primaryAgentUpdateSettings(s)
-}
-
 func init() {
-	registerAgentFactory(
+	registerOpenCodeFamilyProvider(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartKilo(ctx, opts, sink)
-		},
-		nil, // models discovered dynamically from newSession
-		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   OptionGroupKeyPrimaryAgent,
-			Label: "Primary Agent",
-			Options: []*leapmuxv1.AvailableOption{
-				{Id: KiloPrimaryAgentCode, Name: "Code", IsDefault: true},
-				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
-			},
-		}},
-		"LEAPMUX_KILO_DEFAULT_MODEL",
-		"LEAPMUX_KILO_DEFAULT_EFFORT",
-		"kilo",
+		StartKilo,
+		fallbackKiloPrimaryAgents(),
+		"LEAPMUX_KILO_DEFAULT_MODEL", "LEAPMUX_KILO_DEFAULT_EFFORT", "kilo",
 	)
 }

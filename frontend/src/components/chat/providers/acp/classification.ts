@@ -1,8 +1,6 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { PermissionMode } from '~/utils/controlResponse'
-import * as workerRpc from '~/api/workerRpc'
 import { isObject } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
@@ -33,13 +31,6 @@ export function acpBuildControlResponse(
   return content
     ? buildDenyResponse(requestId, content)
     : buildAllowResponse(requestId, getToolInput(payload))
-}
-
-export async function changeACPPermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
-  await workerRpc.updateAgentSettings(workerId, {
-    agentId,
-    settings: { permissionMode: mode },
-  })
 }
 
 const ACP_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
@@ -86,7 +77,7 @@ export interface ACPClassifyConfig {
 
 /**
  * Shared `extractQuotableText` for ACP-based providers (OpenCode, Cursor,
- * Kilo, Goose, Copilot, Gemini). Reads `parent.content.text` for
+ * Kilo, Goose, Copilot, Reasonix). Reads `parent.content.text` for
  * agent_message_chunk / agent_thought_chunk shapes (via `extractAgentText`)
  * and falls back to plain string `parent.content` for user_content /
  * plan_execution.
@@ -109,6 +100,10 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     ACP_SESSION_UPDATE.USAGE_UPDATE,
     ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE,
     ACP_SESSION_UPDATE.USER_MESSAGE_CHUNK,
+    // The backend consumes config_option_update centrally for every ACP provider (it
+    // never persists it), so hide it for all of them -- including historical rows that
+    // predate the central handling and would otherwise render as an unknown message.
+    ACP_SESSION_UPDATE.CONFIG_OPTION_UPDATE,
   ])
   const hiddenSessionUpdates = config.extraHiddenSessionUpdates
     ? new Set([...baseHidden, ...config.extraHiddenSessionUpdates])

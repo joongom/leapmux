@@ -16,3 +16,15 @@ func spawnMockClaudeAgent(ctx context.Context, testRun string, extraEnv []string
 	cmd.Env = append(os.Environ(), extraEnv...)
 	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink)
 }
+
+// claudeModelsByID indexes converted available models by their ID for
+// order-independent assertions. It lives here, outside the unix-only
+// claude_test.go, so tests that run on every platform (e.g. the live-settings
+// control-response tests) can use it without dragging in unix build tags.
+func claudeModelsByID(models []*ModelInfo) map[string]*ModelInfo {
+	byID := make(map[string]*ModelInfo, len(models))
+	for _, m := range models {
+		byID[m.Id] = m
+	}
+	return byID
+}

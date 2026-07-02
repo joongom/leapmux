@@ -1,6 +1,7 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
+import { codeBlockCode, codeBlockPre, codeWrap } from '~/styles/codeBlock'
 import { iconSize } from '~/styles/tokens'
+import { shikiDualThemeColors } from '../shikiTokenColors.css'
 
 export const markdownContent = style({
   wordBreak: 'break-word',
@@ -9,23 +10,16 @@ export const markdownContent = style({
 // Code blocks: move scroll to <code> so the copy button stays fixed.
 globalStyle(`${markdownContent} pre`, codeBlockPre('hidden'))
 globalStyle(`${markdownContent} pre code`, codeBlockCode)
+// Rendered (read-only) markdown code blocks WRAP long lines like every other read-only
+// code surface (tool output, Read, diff) instead of scrolling horizontally, which is
+// awkward inside a chat message; the copy button preserves the exact source regardless.
+// Scoped to markdownContent so the Milkdown EDITOR (which shares codeBlockCode) keeps
+// horizontal scroll for a stable caret while typing.
+globalStyle(`${markdownContent} pre code`, codeWrap)
 
-// Shiki dual-theme support via CSS variables
-globalStyle(`${markdownContent} pre.shiki`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`${markdownContent} pre.shiki span`, {
-  color: 'var(--shiki-light)',
-})
-
-globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki`, {
-  color: 'var(--shiki-dark)',
-})
-
-globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki span`, {
-  color: 'var(--shiki-dark)',
-})
+// Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg)
+shikiDualThemeColors(`${markdownContent} pre.shiki`)
+shikiDualThemeColors(`${markdownContent} pre.shiki span`)
 
 // Task list checkboxes
 globalStyle(`${markdownContent} li > input[type="checkbox"]`, {
@@ -34,8 +28,23 @@ globalStyle(`${markdownContent} li > input[type="checkbox"]`, {
   pointerEvents: 'none',
 })
 
-// Copy button for code blocks (injected via DOM)
-globalStyle(`${markdownContent} pre .copy-code-button`, {
+// Copy button for code blocks (injected via DOM by MessageBubble.injectCopyButtons).
+//
+// Keyed to the `code-copy-host` marker class the injector adds to every <pre> it
+// augments -- NOT to `.markdownContent`. The button is injected into code blocks in any
+// context (markdown bodies AND non-markdown <pre> such as a result-divider error
+// detail), but the positioning used to be scoped to `${markdownContent} pre ...`, so a
+// <pre> outside the markdown wrapper got an UNpositioned button that fell inline at the
+// end of the text. Anchoring on the marker class instead positions it top-right
+// everywhere, and the marker carries `position: relative` so the absolute button anchors
+// to its own <pre> regardless of the surrounding layout.
+export const codeCopyHostClass = 'code-copy-host'
+
+globalStyle(`.${codeCopyHostClass}`, {
+  position: 'relative',
+})
+
+globalStyle(`.${codeCopyHostClass} .copy-code-button`, {
   all: 'unset',
   boxSizing: 'border-box',
   position: 'absolute',
@@ -52,14 +61,14 @@ globalStyle(`${markdownContent} pre .copy-code-button`, {
   color: 'var(--muted-foreground)',
   cursor: 'pointer',
   opacity: '0',
-  transition: 'opacity 0.15s',
+  transition: 'opacity var(--transition)',
 })
 
-globalStyle(`${markdownContent} pre:hover .copy-code-button`, {
+globalStyle(`.${codeCopyHostClass}:hover .copy-code-button`, {
   opacity: '1',
 })
 
-globalStyle(`${markdownContent} pre .copy-code-button:hover`, {
+globalStyle(`.${codeCopyHostClass} .copy-code-button:hover`, {
   backgroundColor: 'var(--card)',
   color: 'var(--foreground)',
 })

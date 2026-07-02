@@ -280,10 +280,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       },
       getOnTogglePlanMode: () => onTogglePlanModeRef,
       setActiveFormatting: next => setActiveFormatting(next),
-      codeLangSetters: {
+      codeLangHandlers: {
         setCodeLangNodePos,
         setCodeLangAnchorEl,
         setCodeLangPopoverOpen,
+        getCodeLangPopoverOpen: codeLangPopoverOpen,
+        getCodeLangNodePos: codeLangNodePos,
       },
       setMarkdown,
       onContentChange: hasContent => props.onContentChange?.(hasContent),

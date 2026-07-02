@@ -92,8 +92,8 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 	// Mock a successful restart so we can validate the happy-path ordering
 	// without spawning a real agent process. context_cleared is only
 	// broadcast when the new agent starts successfully.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -157,8 +157,8 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 
 	// Mock a successful restart so we exercise the happy path without
 	// spawning a real agent process.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -244,7 +244,7 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 	// required (createMessageRow refuses to persist messages for an UNSPECIFIED
 	// provider), so the failure is injected via startAgentFn rather than by
 	// leaving the provider unset.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced restart failure")
 	}
 
@@ -323,12 +323,12 @@ func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
 	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-	gemini := leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI
+	cursor := leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR
 
 	assert.True(t, agent.IsInterruptRequest(pi, `{"type":"abort"}`), "Pi abort RPC should be treated as an interrupt")
 	assert.True(t, agent.IsInterruptRequest(codex, `{"jsonrpc":"2.0","method":"turn/interrupt"}`), "Codex turn interrupt should be treated as an interrupt")
 	assert.True(t, agent.IsInterruptRequest(claude, `{"type":"control_request","request":{"subtype":"interrupt"}}`), "Claude control interrupt should be treated as an interrupt")
-	assert.True(t, agent.IsInterruptRequest(gemini, `{"jsonrpc":"2.0","method":"session/cancel"}`), "ACP session/cancel should be treated as an interrupt")
+	assert.True(t, agent.IsInterruptRequest(cursor, `{"jsonrpc":"2.0","method":"session/cancel"}`), "ACP session/cancel should be treated as an interrupt")
 
 	// Each classifier only matches its own format — cross-provider payloads
 	// must not be misclassified.

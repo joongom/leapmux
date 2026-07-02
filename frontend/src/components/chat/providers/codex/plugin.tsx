@@ -5,20 +5,24 @@ import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { PermissionMode } from '~/utils/controlResponse'
-import * as workerRpc from '~/api/workerRpc'
+import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { getToolName } from '~/utils/controlResponse'
-import * as styles from '../../ChatView.css'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
+import {
+  CODEX_OPTION_COLLABORATION_MODE,
+  CODEX_OPTION_NETWORK_ACCESS,
+  CODEX_OPTION_SANDBOX_POLICY,
+  DEFAULT_CODEX_COLLABORATION_MODE,
+} from './constants'
 import { CODEX_RENDERERS } from './defineRenderer'
 import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
@@ -31,14 +35,6 @@ import {
   CodexTurnPlanRenderer,
 } from './renderers'
 import { extractItem } from './renderHelpers'
-import {
-  CODEX_EXTRA_COLLABORATION_MODE,
-  CodexSettingsPanel,
-  CodexTriggerLabel,
-  DEFAULT_CODEX_COLLABORATION_MODE,
-  DEFAULT_CODEX_EFFORT,
-  DEFAULT_CODEX_MODEL,
-} from './settings'
 import { codexToolResultMeta } from './toolResult'
 // Side-effect import: each renderer module's `defineCodexRenderer(...)` call
 // runs at load time and registers itself in `CODEX_RENDERERS`. Without this
@@ -189,6 +185,10 @@ function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] }
 function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
   if (m.method !== CODEX_RATE_LIMITS_METHOD)
     return false
+  // An authoritative reached-type (rate limit / credits / usage cap) is a real
+  // block -- never hide it, even when every rolling window is under threshold.
+  if (codexRateLimitReachedType(m))
+    return false
   for (const { info } of iterCodexRateLimitTiers(m)) {
     if (info.status !== 'allowed')
       return false
@@ -275,12 +275,9 @@ const CODEX_LEAPMUX_NOTIFICATION_TYPES = new Set<string>([
 ])
 
 const codexPlugin: Provider = {
-  defaultModel: DEFAULT_CODEX_MODEL,
-  defaultEffort: DEFAULT_CODEX_EFFORT,
-  defaultPermissionMode: 'on-request',
   bypassPermissionMode: 'never',
   // Seed a new Codex agent with its default collaboration mode.
-  defaultExtraSettings: { [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },
+  defaultProviderOptions: { [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },
   // Codex accepts an option selection AND a free-text note together, so the
   // AskUserQuestion UI keeps both instead of treating them as mutually exclusive.
   preservesSelectionNotes: true,
@@ -305,12 +302,22 @@ const codexPlugin: Provider = {
   // show as thinking on creation, and so post-reconnect rehydration is
   // driven by the authoritative server-side state.
   hasActiveTurn: (_agent, sessionInfo) => Boolean(sessionInfo?.codexTurnId),
-  planMode: {
-    currentMode: agent => agent.extraSettings?.[CODEX_EXTRA_COLLABORATION_MODE] || DEFAULT_CODEX_COLLABORATION_MODE,
-    planValue: 'plan',
-    defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
-    setMode: (mode, onChange) => onChange({ kind: 'optionGroup', key: CODEX_EXTRA_COLLABORATION_MODE, value: mode }),
-  },
+  planMode: buildPlanMode(CODEX_OPTION_COLLABORATION_MODE, 'plan', DEFAULT_CODEX_COLLABORATION_MODE),
+  // The trigger's mode segment shows the "Workflow" (collaboration_mode) group --
+  // Codex's mode axis -- not the approval policy. It reads "Plan Mode" when the
+  // workflow sits at its plan value.
+  triggerModeGroupKey: CODEX_OPTION_COLLABORATION_MODE,
+  // The settings panel's declarative "Bypass permissions" button: one click
+  // sets network access, sandbox policy, and approval policy together.
+  settingsActions: [{
+    label: 'Bypass permissions',
+    testId: 'codex-bypass-permissions',
+    sets: {
+      [CODEX_OPTION_NETWORK_ACCESS]: 'enabled',
+      [CODEX_OPTION_SANDBOX_POLICY]: 'danger-full-access',
+      [OPTION_ID_PERMISSION_MODE]: 'never',
+    },
+  }],
   classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
     const parent = input.parentObject
     const wrapper = input.wrapper
@@ -401,7 +408,7 @@ const codexPlugin: Provider = {
     if (category.kind === 'assistant_thinking')
       return <CodexReasoningRenderer parsed={parsed} context={context} />
     if (category.kind === 'user_content')
-      return <UserContentMessage parsed={parsed} />
+      return <UserContentMessage parsed={parsed} context={context} />
     if (category.kind === 'plan_execution') {
       const obj = isObject(parsed) ? parsed as Record<string, unknown> : null
       const text = obj && typeof obj.content === 'string' ? obj.content as string : ''
@@ -431,6 +438,11 @@ const codexPlugin: Provider = {
   toolResultMeta: codexToolResultMeta,
 
   resultDivider: codexResultDivider,
+
+  // A persisted `turn_completed` result divider is the turn boundary that must stop
+  // the thinking indicator after a reconnect / missed live event -- so it clears the
+  // active codex_turn_id, mirroring the ephemeral session-info clear.
+  resultDividerEndsActiveTurn: subtype => subtype === 'turn_completed',
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject
@@ -479,20 +491,8 @@ const codexPlugin: Provider = {
     return response
   },
 
-  // Codex applies the new approval policy on the next turn/start.
-  async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
-    await workerRpc.updateAgentSettings(workerId, {
-      agentId,
-      settings: { permissionMode: mode },
-    })
-  },
   ControlContent: CodexControlContent,
   ControlActions: CodexControlActions,
-
-  SettingsPanel: CodexSettingsPanel,
-  settingsMenuClass: styles.settingsMenuWide,
-
-  settingsTriggerLabel: CodexTriggerLabel,
 }
 
 registerProvider(AgentProvider.CODEX, codexPlugin)

@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
 // testSinkSettingsRefreshed records the args of a PersistSettingsRefresh call.
@@ -11,7 +12,13 @@ type testSinkSettingsRefreshed struct {
 	Model          string
 	Effort         string
 	PermissionMode string
-	ExtraSettings  map[string]string
+	Options        map[string]string
+}
+
+// testSinkModeChange records the args of a NotifyPermissionModeChanged call.
+type testSinkModeChange struct {
+	Old string
+	New string
 }
 
 // testSink is a test implementation of OutputSink that records calls.
@@ -23,6 +30,7 @@ type testSink struct {
 	streamEnds        []string
 	sessionIDs        []string
 	permissionModes   []string
+	modeChanges       []testSinkModeChange
 	settingsRefreshes []testSinkSettingsRefreshed
 	sessionInfos      []map[string]interface{}
 	spanTypes         map[string]string
@@ -157,15 +165,30 @@ func (s *testSink) UpdatePermissionMode(mode string) {
 	defer s.mu.Unlock()
 	s.permissionModes = append(s.permissionModes, mode)
 }
-func (s *testSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
+func (s *testSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make(map[string]string, len(extraSettings))
-	for k, v := range extraSettings {
-		cp[k] = v
+	s.modeChanges = append(s.modeChanges, testSinkModeChange{Old: oldMode, New: newMode})
+}
+func (s *testSink) PersistSettingsRefresh(refresh optionmap.Map) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Split the unified refresh map back into the named fields the assertions read:
+	// the three well-known axes plus every other key as an "extra". An axis the
+	// provider omitted reads back as "" (absent), matching the old "" sentinel.
+	options := make(map[string]string)
+	for k, v := range refresh {
+		switch k {
+		case OptionIDModel, OptionIDEffort, OptionIDPermissionMode:
+		default:
+			options[k] = v
+		}
 	}
 	s.settingsRefreshes = append(s.settingsRefreshes, testSinkSettingsRefreshed{
-		Model: model, Effort: effort, PermissionMode: permissionMode, ExtraSettings: cp,
+		Model:          refresh[OptionIDModel],
+		Effort:         refresh[OptionIDEffort],
+		PermissionMode: refresh[OptionIDPermissionMode],
+		Options:        options,
 	})
 }
 func (s *testSink) BroadcastStatusActive(sessionID string) {
@@ -301,6 +324,18 @@ func (s *testSink) SettingsRefreshCount() int {
 	return len(s.settingsRefreshes)
 }
 
+func (s *testSink) StatusActiveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.statusActives)
+}
+
+func (s *testSink) ModeChanges() []testSinkModeChange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkModeChange(nil), s.modeChanges...)
+}
+
 func (s *testSink) LastSettingsRefresh() testSinkSettingsRefreshed {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -407,7 +442,8 @@ func (noopSink) BroadcastControlRequest(string, []byte)                         
 func (noopSink) BroadcastControlCancel(string)                                     {}
 func (noopSink) UpdateSessionID(string)                                            {}
 func (noopSink) UpdatePermissionMode(string)                                       {}
-func (noopSink) PersistSettingsRefresh(string, string, string, map[string]string)  {}
+func (noopSink) NotifyPermissionModeChanged(string, string)                        {}
+func (noopSink) PersistSettingsRefresh(optionmap.Map)                              {}
 func (noopSink) BroadcastStatusActive(string)                                      {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}
 func (noopSink) PersistLeapMuxNotification(map[string]interface{})                 {}

@@ -9,15 +9,24 @@ import './index'
 // stub implementations of modules that pull in shiki at evaluation time —
 // shiki can't initialize under jsdom, so the real modules would crash on load.
 
-// eslint-disable-next-line no-control-regex -- ANSI escape detection requires matching control characters
-const ANSI_ESCAPE_RE = /\x1B\[[\d;]*m/
-
 vi.mock('~/lib/renderAnsi', () => ({
-  containsAnsi: (text: string) => ANSI_ESCAPE_RE.test(text),
+  containsAnsi: (text: string) => text.includes('\x1B'),
   renderAnsi: (text: string) => `<pre class="shiki"><code>${text}</code></pre>`,
 }))
 
 vi.mock('~/lib/renderMarkdown', () => ({
+  getCachedMarkdownHtml: () => undefined,
   renderMarkdown: (text: string) => text,
-  shikiHighlighter: { codeToHtml: (code: string) => `<pre><code>${code}</code></pre>` },
+  renderMarkdownCachedOrPlain: (text: string) => text,
+  renderMarkdownPlain: (text: string) => text,
+  // ReadResultView's ANSI sync path calls codeToTokens (not codeToHtml); keep the
+  // stub faithful to the real interface so a .log Read result rendered through these
+  // mocks tokenizes (one token per line) instead of hitting a TypeError that the
+  // view's try/catch would silently swallow to plain.
+  shikiHighlighter: {
+    codeToHtml: (code: string) => `<pre><code>${code}</code></pre>`,
+    codeToTokens: (code: string) => ({
+      tokens: code.split('\n').map(line => [{ content: line, htmlStyle: {} }]),
+    }),
+  },
 }))

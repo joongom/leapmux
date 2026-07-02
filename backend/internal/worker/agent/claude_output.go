@@ -57,7 +57,81 @@ type contextUsageSnapshot struct {
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
 	ContextWindow            int64
-	LastBroadcast            time.Time
+	// windowModel is the model id ContextWindow was derived for. The snapshot
+	// outlives a model change (a live model switch, or the account-default sentinel
+	// resolving to a concrete model after startup), so the window is re-seeded from
+	// the catalog whenever the current model no longer matches this -- otherwise a
+	// session that began on the 200K sentinel placeholder (or a smaller-window model)
+	// would under-report a larger window until a result message happened to refresh it.
+	windowModel   string
+	LastBroadcast time.Time
+}
+
+// reseedWindow updates the snapshot's catalog window estimate when the model it was
+// derived for no longer matches the current model: the snapshot outlives a model change
+// (a live switch, or the account-default sentinel resolving to a concrete model after
+// startup). It runs even when estimate is 0 (an unknown/unresolved model), so switching
+// to such a model CLEARS a stale larger window carried over from the previous model --
+// reverting to "unknown" rather than over-reporting -- and switching to a known model
+// picks up its estimate immediately. A result message's window stays authoritative for
+// its model because adoptResultWindow stamps windowModel too, so this estimate doesn't
+// clobber it for the same model.
+func (s *contextUsageSnapshot) reseedWindow(model string, estimate int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.windowModel != model {
+		s.ContextWindow = estimate
+		s.windowModel = model
+	}
+}
+
+// adoptResultWindow records the authoritative context window a result message reported
+// for model, stamping windowModel so the catalog re-seed (reseedWindow) won't overwrite
+// it for the same model. A non-positive window is ignored: top-level result messages
+// always carry the primary model's window, but a subagent result that slipped past the
+// parent_tool_use_id guard would not, and must not clear the real window.
+func (s *contextUsageSnapshot) adoptResultWindow(model string, cw int64) {
+	if cw <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ContextWindow = cw
+	s.windowModel = model
+}
+
+// buildBroadcast assembles the context_usage broadcast payload from the current
+// snapshot and reports whether it should be sent. It returns (nil, false) when no
+// token usage has been recorded yet, or when the 10s debounce window has not elapsed
+// for a non-result message; a result message always broadcasts. When it decides to
+// broadcast it stamps LastBroadcast and includes context_window only when known
+// (> 0), matching the "omit when unknown" contract reseedWindow/adoptResultWindow
+// maintain. Takes s.mu, so the caller must not already hold it. now is passed in so
+// the debounce is testable without a real clock.
+func (s *contextUsageSnapshot) buildBroadcast(msgType string, now time.Time) (map[string]interface{}, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hasUsage := s.InputTokens > 0 || s.OutputTokens > 0 ||
+		s.CacheCreationInputTokens > 0 || s.CacheReadInputTokens > 0
+	if !hasUsage {
+		return nil, false
+	}
+	shouldBroadcast := msgType == claudeMsgTypeResult ||
+		now.Sub(s.LastBroadcast) >= 10*time.Second
+	if !shouldBroadcast {
+		return nil, false
+	}
+	s.LastBroadcast = now
+	usageMap := map[string]interface{}{
+		"input_tokens":                s.InputTokens,
+		"output_tokens":               s.OutputTokens,
+		"cache_creation_input_tokens": s.CacheCreationInputTokens,
+		"cache_read_input_tokens":     s.CacheReadInputTokens,
+	}
+	if s.ContextWindow > 0 {
+		usageMap["context_window"] = s.ContextWindow
+	}
+	return usageMap, true
 }
 
 // HandleOutput processes a single NDJSON line from Claude Code.
@@ -514,22 +588,56 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlCancel(content []byte) {
 	a.sink.BroadcastControlCancel(cc.RequestID)
 }
 
-// claudeCodeHandleControlResponse handles control_response from Claude Code.
-// Note: the control request is already deleted from the DB by the
-// SendControlResponse handler; this method only handles plan mode changes.
+// claudeCodeHandleControlResponse handles a control_response from Claude Code that no
+// pending waiter consumed -- in practice a DEFERRED set_permission_mode ack. The live
+// UpdateSettings path caps its wait at permissionModeApplyTimeout; while a turn is streaming
+// the CLI defers the ack until the turn ends, so UpdateSettings applied the mode
+// optimistically and this late response is the authoritative reconciliation.
+//
+// Re-sync from the provider rather than trusting the optimistic value: adopt the mode the CLI
+// actually applied (response.mode -- present on a success, and on a rejection that reports the
+// still-effective mode) into BOTH the in-memory confirmed state AND the persisted row +
+// broadcast. Updating a.confirmedPermissionMode is the part the optimistic path can't do
+// itself: OptionGroups() reads confirmedPermissionMode, so without this the agent's catalog
+// would keep reporting the optimistic mode even after the CLI settled on a different one.
+// (get_settings omits permission mode and, run from this reader goroutine, would deadlock on
+// its own response -- so the response.mode field is the only provider-authoritative source.)
 func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	var cr struct {
 		Response struct {
-			Subtype  string `json:"subtype"`
-			Response struct {
+			Subtype   string `json:"subtype"`
+			RequestID string `json:"request_id"`
+			Response  struct {
 				Mode string `json:"mode"`
 			} `json:"response"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(content, &cr); err == nil {
-		if cr.Response.Subtype == "success" && cr.Response.Response.Mode != "" {
-			a.sink.UpdatePermissionMode(cr.Response.Response.Mode)
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return
+	}
+	mode := cr.Response.Response.Mode
+	if mode == "" {
+		return
+	}
+	// Fold the mode back ONLY when this response is the deferred ack of the set_permission_mode
+	// toggle we are awaiting -- matched by request_id. Without the match a stale/duplicate ack,
+	// an earlier (superseded) toggle's ack, or any other mode-bearing control_response would
+	// clobber the confirmed mode with a value the user didn't last choose. Consuming the id
+	// (clearing it) also makes a re-delivered ack a no-op.
+	a.mu.Lock()
+	matched := cr.Response.RequestID != "" && cr.Response.RequestID == a.deferredPermissionModeReqID
+	if matched {
+		a.deferredPermissionModeReqID = ""
+		a.confirmedPermissionMode = mode
+		// The deferred ack confirming "auto" proves the session can enter it; clear a stale
+		// autoModeAvailable=false (see applyPermissionModeLive) so the picker offers auto again.
+		if mode == PermissionModeAuto {
+			a.autoModeAvailable = true
 		}
+	}
+	a.mu.Unlock()
+	if matched {
+		a.sink.UpdatePermissionMode(mode)
 	}
 
 	// No need to persist control_response in the timeline — they are
@@ -605,19 +713,60 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
 
-	if rlInfo.Status == "allowed" {
+	// Decide whether this event is an actual block that warrants waiting for a
+	// reset. Only a hard "rejected" status blocks; "allowed" and
+	// "allowed_warning" are both served -- a warning is just a heads-up that the
+	// window is filling up -- so they clear any pending resume. This mirrors
+	// Claude Code's own gate (it shows the blocking countdown only on "rejected")
+	// and fixes a bug where any non-"allowed" status, notably "allowed_warning",
+	// scheduled a spurious auto-continue.
+	usingOverage := rlInfo.IsUsingOverage != nil && *rlInfo.IsUsingOverage
+	blocked, resumeAt := claudeRateLimitResume(
+		rlInfo.Status, rlInfo.ResetsAt, usingOverage, rlInfo.OverageStatus, rlInfo.OverageResetsAt)
+	if !blocked {
 		a.sink.CancelAutoContinue(AutoContinueReasonRateLimit)
 		return
 	}
-	if rlInfo.ResetsAt == nil {
+	// Blocked, but a resume can only be scheduled if the event says when the
+	// window lifts. A blocked-but-undated event leaves any existing schedule
+	// intact rather than cancelling a legitimate pending resume.
+	if resumeAt == nil {
 		return
 	}
 
 	a.sink.ScheduleAutoContinue(AutoContinueSchedule{
 		Reason:        AutoContinueReasonRateLimit,
-		DueAt:         time.Unix(*rlInfo.ResetsAt, 0).UTC(),
+		DueAt:         time.Unix(*resumeAt, 0).UTC(),
 		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
 	})
+}
+
+// claudeRateLimitStatusRejected is the only Claude rate_limit_event status that
+// represents an actual block. The Anthropic-native status vocabulary is
+// "allowed" / "allowed_warning" / "rejected" (and the same three for the overage
+// status); "allowed" and "allowed_warning" are both served requests.
+const claudeRateLimitStatusRejected = "rejected"
+
+// claudeRateLimitResume reports whether a Claude rate_limit_event represents an
+// actual block and, if so, the Unix reset time to auto-resume at (nil when the
+// event is a block but carries no reset). Mirrors Claude Code's own gate:
+//
+//   - While NOT on overage, the base window blocks only on a "rejected" status,
+//     lifting at resetsAt. "allowed" / "allowed_warning" are served.
+//   - While ON overage, the base window is absorbed by the overage allowance, so
+//     the block applies only once the overage itself is "rejected", lifting at
+//     overageResetsAt.
+func claudeRateLimitResume(status string, resetsAt *int64, usingOverage bool, overageStatus string, overageResetsAt *int64) (blocked bool, resumeAt *int64) {
+	if usingOverage {
+		if overageStatus == claudeRateLimitStatusRejected {
+			return true, overageResetsAt
+		}
+		return false, nil
+	}
+	if status == claudeRateLimitStatusRejected {
+		return true, resetsAt
+	}
+	return false, nil
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.
@@ -627,7 +776,41 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 		info["total_cost_usd"] = *env.CostUSD
 	}
 
+	// Snapshot a.model and the effort resolver under a.mu in one acquisition: this
+	// runs on the readOutputLoop goroutine while refreshSettingsFromAgent may
+	// concurrently rewrite a.model under the same lock, so the a.mu pairing is what the
+	// a.model read needs. a.availableModels (which the resolver captures) is written
+	// only during the pre-registration startup handshake (convertClaudeModels, then a
+	// possible ensureSettledModelListed insert) and never mutated afterward. This read
+	// happens-after that window: it fires only for assistant/result output, which needs
+	// a user turn, and a user turn can't reach this agent until it has been registered
+	// with the manager -- the registration's lock provides the happens-before edge that
+	// publishes every startup write. So the resolver needs a.mu only for the a.model
+	// read it pairs with here; the catalog field is already safely published. The
+	// catalog entries are immutable shared data, so the window lookup is safe to compute
+	// after unlocking.
+	a.mu.Lock()
+	model := a.model
+	resolver := a.effortResolver()
+	a.mu.Unlock()
+	// The catalog window is an ESTIMATE inferred from the model id ("[1m]" => 1M, else
+	// 200K). resolver.contextWindow resolves it over the dynamic catalog with the static
+	// fallback -- the same dynamic-first-then-fallback the effort lookups use -- so a
+	// model the live CLI dropped from its list but a resumed session is still running
+	// keeps its known window instead of going dark. It is 0 only when the model has no
+	// known window in EITHER catalog: the unresolved account-default sentinel (its entry
+	// is a placeholder), or a model absent from both lists. We deliberately do NOT
+	// fabricate a window then -- 0 means "unknown" and the broadcast omits context_window
+	// below, matching the frontend, which likewise shows no window when it can't resolve
+	// one. For a concrete model absent from both catalogs, a result message's modelUsage
+	// supplies the real window once one arrives (findPrimaryContextWindow matches its
+	// concrete key). The unresolved sentinel ("default") can't: it matches no concrete
+	// usage key, so it stays unknown until the model resolves off the sentinel (a later
+	// refreshSettingsFromAgent), whose model change re-seeds the window here.
+	contextWindow := resolver.contextWindow(model)
+
 	snapshot := a.getOrCreateUsageSnapshot()
+	snapshot.reseedWindow(model, contextWindow)
 
 	if msgType == claudeMsgTypeAssistant && env.Message.Usage != nil {
 		u := env.Message.Usage
@@ -640,109 +823,80 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 	}
 
 	if msgType == claudeMsgTypeResult && env.ModelUsage != nil {
-		// Find the context window for the primary model in the usage map.
-		// Top-level result messages include cumulative session-level usage
-		// that always contains the primary model's entry. Subagent results
-		// (if they bypass the outer parent_tool_use_id guard) only contain
-		// the subagent's model and will not match the primary, so we skip
-		// the update to avoid overwriting with a smaller context window.
-		if cw := findPrimaryContextWindow(env.ModelUsage, a.model); cw > 0 {
-			snapshot.mu.Lock()
-			snapshot.ContextWindow = cw
-			snapshot.mu.Unlock()
-		}
+		// Find the context window for the primary model in the usage map. Top-level
+		// result messages include cumulative session-level usage that always contains
+		// the primary model's entry. Subagent results (if they bypass the outer
+		// parent_tool_use_id guard) only contain the subagent's model and will not
+		// match the primary; findPrimaryContextWindow returns 0 for that, and
+		// adoptResultWindow ignores it rather than overwriting with a smaller window.
+		snapshot.adoptResultWindow(model, findPrimaryContextWindow(env.ModelUsage, model))
 	}
 
-	snapshot.mu.Lock()
-	hasUsage := snapshot.InputTokens > 0 || snapshot.OutputTokens > 0 ||
-		snapshot.CacheCreationInputTokens > 0 || snapshot.CacheReadInputTokens > 0
-	if hasUsage {
-		now := time.Now()
-		shouldBroadcast := msgType == claudeMsgTypeResult ||
-			now.Sub(snapshot.LastBroadcast) >= 10*time.Second
-		if shouldBroadcast {
-			snapshot.LastBroadcast = now
-			usageMap := map[string]interface{}{
-				"input_tokens":                snapshot.InputTokens,
-				"output_tokens":               snapshot.OutputTokens,
-				"cache_creation_input_tokens": snapshot.CacheCreationInputTokens,
-				"cache_read_input_tokens":     snapshot.CacheReadInputTokens,
-			}
-			if snapshot.ContextWindow > 0 {
-				usageMap["context_window"] = snapshot.ContextWindow
-			}
-			info["context_usage"] = usageMap
-		}
+	if usageMap, ok := snapshot.buildBroadcast(msgType, time.Now()); ok {
+		info["context_usage"] = usageMap
 	}
-	snapshot.mu.Unlock()
 
 	if len(info) > 0 {
 		a.sink.BroadcastSessionInfo(info)
 	}
 }
 
+// getOrCreateUsageSnapshot returns the usage snapshot, creating an empty one on
+// first use. The window is NOT seeded here: every caller calls reseedWindow
+// immediately afterward, which is the single source of the estimated window (it
+// also stamps windowModel, which a constructor seed cannot). a.contextUsage is only
+// ever touched from the readOutputLoop goroutine, so it needs no lock of its own;
+// the snapshot's own fields are guarded by snapshot.mu.
 func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 	if a.contextUsage == nil {
-		a.contextUsage = &contextUsageSnapshot{
-			ContextWindow: modelContextWindow(claudeCodeAvailableModels, a.model),
-		}
+		a.contextUsage = &contextUsageSnapshot{}
 	}
 	return a.contextUsage
 }
 
 // modelContextWindow looks up the context window for a model ID from a list
-// of available models. Returns 0 if the model is not found.
-func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int64 {
-	for _, m := range models {
-		if m.Id == modelID {
-			return m.ContextWindow
-		}
+// of available models. Returns 0 if the model is not found. Delegates to
+// FindAvailableModel so the nil-entry guard and id match live in one place
+// rather than a fourth hand-copied catalog walk.
+func modelContextWindow(models []*ModelInfo, modelID string) int64 {
+	if m := FindAvailableModel(models, modelID); m != nil {
+		return m.ContextWindow
 	}
 	return 0
 }
 
-// findPrimaryContextWindow extracts the context window for the primary model
-// from a modelUsage map. The modelUsage keys are full API model IDs (e.g.
-// "claude-opus-4-6[1m]") while shortModelID uses the short form (e.g.
-// "opus[1m]"). Returns 0 if the primary model is not found.
+// findPrimaryContextWindow extracts the context window for the primary model from a
+// modelUsage map. The modelUsage keys are full API model IDs (e.g.
+// "claude-opus-4-6[1m]") while shortModelID is the short alias (e.g. "opus[1m]").
+// Each key is collapsed into the alias space with normalizeClaudeCodeModel -- the
+// same normalization a.model and the catalog ids use -- and compared for EQUALITY,
+// so the match is exact rather than a substring scan: "opus" no longer matches an
+// unrelated "claude-opusplus-1" key, and a "[1M]" spelling is handled (normalize
+// lowercases).
+//
+// Because Opus collapses to a single "opus[1m]" alias regardless of suffix, two keys
+// (a standard-context "claude-opus-4-6" and a 1M "claude-opus-4-6[1m]") could both
+// match -- a case the current CLI does not emit (it lists only the 1M Opus), but one
+// the old per-suffix disambiguation handled. Return the LARGEST matching window rather
+// than the first hit so the result is deterministic regardless of map iteration order
+// (the 1M window is the correct one for the running Opus). Returns 0 if the primary
+// model is not found.
 func findPrimaryContextWindow(modelUsage map[string]json.RawMessage, shortModelID string) int64 {
 	if shortModelID == "" {
-		// No primary model configured — fall back to max across all models.
+		// No primary model configured -- fall back to max across all models.
 		return maxContextWindow(modelUsage)
 	}
-
-	// Extract the family prefix and optional variant suffix from the short
-	// model ID (e.g. "opus[1m]" → family "opus", suffix "[1m]").
-	family := shortModelID
-	suffix := ""
-	if idx := strings.Index(shortModelID, "["); idx >= 0 {
-		family = shortModelID[:idx]
-		suffix = shortModelID[idx:]
-	}
-
+	want := normalizeClaudeCodeModel(shortModelID)
+	var best int64
 	for key, raw := range modelUsage {
-		if !strings.Contains(key, family) {
+		if normalizeClaudeCodeModel(key) != want {
 			continue
 		}
-		// When the short ID has a variant suffix (e.g. "[1m]"), the full
-		// API ID must also contain it. When there is no suffix, reject
-		// keys that contain a bracket-variant so "opus" does not match
-		// "claude-opus-4-6[1m]".
-		if suffix != "" {
-			if !strings.Contains(key, suffix) {
-				continue
-			}
-		} else {
-			if strings.Contains(key, "[") {
-				continue
-			}
-		}
-
-		if cw := contextWindowOf(raw); cw > 0 {
-			return cw
+		if cw := contextWindowOf(raw); cw > best {
+			best = cw
 		}
 	}
-	return 0
+	return best
 }
 
 // contextWindowOf unmarshals a single modelUsage entry and returns its
@@ -890,13 +1044,29 @@ func extractStatusValue(content []byte) (status string, ok bool) {
 	return "", true
 }
 
-var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
-var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`^API Error[^[:alnum:]]+Stream idle timeout(?:$|[^[:alnum:]].*)`)
+var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
+var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Stream idle timeout(?:$|[^[:alnum:]].*)`)
+
+// claudeRetryableOverloadedPattern matches the bare "Overloaded" result string.
+// An overload is Anthropic HTTP 529 -- the most retryable error there is -- but
+// Claude Code emits it in two forms: "API Error: 529 Overloaded" (with the
+// numeric code, already caught by claudeSyntheticAPI5xxPattern) and a bare
+// "API Error: Overloaded" with no code, which the 5xx pattern cannot match
+// because it requires a three-digit code right after the punctuation. This
+// pattern covers the code-less form so both spellings auto-continue.
+var claudeRetryableOverloadedPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Overloaded(?:$|[^[:alnum:]].*)`)
 
 // isRetryableClaudeResultError reports whether a Claude result error should
-// trigger auto-continue.
+// trigger auto-continue. Matching is case-insensitive (each pattern carries the
+// (?i) flag): the result field is an unstructured, human-readable error string,
+// not a structured code, so a cosmetic casing change must not silently regress
+// the retry -- that over-strictness is exactly what left the bare "Overloaded"
+// form unmatched before. False positives stay implausible regardless of casing
+// because every pattern is anchored to the "API Error" prefix Claude Code emits.
 func isRetryableClaudeResultError(s string) bool {
-	return claudeSyntheticAPI5xxPattern.MatchString(s) || claudeRetryableIdleTimeoutPattern.MatchString(s)
+	return claudeSyntheticAPI5xxPattern.MatchString(s) ||
+		claudeRetryableIdleTimeoutPattern.MatchString(s) ||
+		claudeRetryableOverloadedPattern.MatchString(s)
 }
 
 // isSimpleUserTextEcho returns true if the NDJSON line is a user message echo

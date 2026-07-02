@@ -51,13 +51,13 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 		closeOnce    sync.Once
 		startEntered = make(chan string, 1)
 	)
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		closeOnce.Do(func() {
 			startEntered <- opts.AgentID
 			// Subscribe here — by this point the DB row exists, so
 			// WatchEvents accepts the subscription.
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, AfterSeq: 0}},
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
 			}, wWatch)
 
 			// Drive CloseAgent synchronously. dispatch returns only
@@ -138,7 +138,7 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	var closeOnce sync.Once
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		closeOnce.Do(func() {
 			// Worktree must exist by the time we get here — phase 0
 			// ran to completion before phase 2 was entered.

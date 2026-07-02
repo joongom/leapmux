@@ -1,15 +1,17 @@
 import type { Component } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
+import type { MessageRenderCache } from './messageRenderCache'
 import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
-import { createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { render } from 'solid-js/web'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { IconButton } from '~/components/common/IconButton'
@@ -17,21 +19,23 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
+import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
-import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
+import { buildRawJsonEnvelope } from './chatRawJson'
+import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import * as styles from './MessageBubble.css'
-import { classifyMessage, messageBubbleClass, messageRowClass, toClassificationInput } from './messageClassification'
+import { classifyParsedMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
-import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
 import { RelativeTime } from './RelativeTime'
 import { renderResultDivider } from './resultDividerRenderers'
-import { renderJsonHighlight, ToolHeaderActions } from './toolRenderers'
+import { JsonHighlightHtml, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -102,10 +106,9 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
     // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
     if (pre.closest('[data-tool-message]'))
       continue
-    // Skip raw hidden-message JSON — copy is handled by the row's ToolHeaderActions.
-    // closest() walks ancestors so the marker can sit on a wrapper around a Shiki <pre>.
-    if (pre.closest('[data-code-copy="false"]'))
-      continue
+    // The raw hidden-message JSON needs no guard here: it now renders as token <span>s
+    // (JsonHighlightHtml), not a <pre>, so this querySelectorAll('pre') sweep never sees
+    // it. Copy for that block is handled by the row's ToolHeaderActions.
 
     const host = document.createElement('div')
     host.style.display = 'contents'
@@ -126,19 +129,14 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
     }, host)
 
     disposers.push(dispose)
+    // Mark the <pre> so the copy-button positioning (absolute, top-right) and its
+    // relative anchor apply regardless of where the <pre> lives -- a markdown body or a
+    // non-markdown block (e.g. a result-divider error <pre>). Without this the button
+    // anchored only inside `.markdownContent` and fell inline elsewhere.
+    pre.classList.add(codeCopyHostClass)
     pre.appendChild(host)
   }
   return disposers
-}
-
-/** Classify a message, returning both the parsed content and category. */
-export function classifyParsedMessage(
-  message: AgentChatMessage,
-  classificationContext?: { hasCommandStream?: boolean, commandStreamLength?: number },
-) {
-  const parsed = parseMessageContent(message)
-  const category = classifyMessage(toClassificationInput(parsed, message), classificationContext)
-  return { parsed, category }
 }
 
 /**
@@ -168,6 +166,14 @@ export interface MessageBubbleHost {
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  /** Debug: this row's measured DOM height, for the raw-JSON surface. */
+  getHeightDebug?: () => { measured?: number }
+  /** Per-row/content-version cache for pure renderer derivations shared across hidden + visible mounts. */
+  renderCache?: MessageRenderCache
+  /** True while visible row rendering should avoid starting syntax-highlight jobs. */
+  syntaxHighlightingPaused?: () => boolean
+  /** True while the user has a live document selection inside the chat content. */
+  textSelectionActive?: () => boolean
 }
 
 interface MessageBubbleProps {
@@ -188,12 +194,15 @@ interface MessageBubbleProps {
   onReply?: (quotedText: string) => void
   /** Lifted state and lookups owned by the parent ChatView. */
   host?: MessageBubbleHost
+  /** Hidden premeasurement pass: keep layout structure, skip interactive/expensive chrome. */
+  premeasureMode?: boolean
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
   const toolResultExpanded = () =>
-    props.host?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED) ?? false
+    props.host?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
+    ?? messageUiDefault(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
   const toggleToolResultExpanded = () =>
     props.host?.setMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, !toolResultExpanded())
   let contentRef: HTMLDivElement | undefined
@@ -208,59 +217,25 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
   // so the JSON.parse + JSON.stringify only run when a consumer actually
   // reads it (Copy Raw JSON click, hidden-message <pre> render).
-  const rawJson = (): string => {
-    const p = parsed()
-    const msg = props.message
-    const envelope: Record<string, unknown> = {
-      id: msg.id,
-      source: sourceLabel(msg.source),
-      seq: Number(msg.seq),
-      created_at: msg.createdAt,
-    }
-    if (msg.deliveryError)
-      envelope.delivery_error = msg.deliveryError
-    if (msg.depth)
-      envelope.depth = msg.depth
-    if (msg.spanId)
-      envelope.span_id = msg.spanId
-    if (msg.parentSpanId)
-      envelope.parent_span_id = msg.parentSpanId
-    if (msg.spanType)
-      envelope.span_type = msg.spanType
-    if (msg.spanColor > 0)
-      envelope.span_color = msg.spanColor
-    if (msg.spanLines && msg.spanLines !== '[]') {
-      // span_lines is backend-generated JSON, but this same envelope backs the
-      // raw-JSON debug surface for `hidden` / `unsupported_provider` rows, whose
-      // whole purpose is to show the bytes when something is wrong. Guard the
-      // parse like the `content` parse below so a corrupt span_lines degrades to
-      // its raw string instead of throwing into the ErrorBoundary and hiding the
-      // JSON we came here to inspect.
-      try {
-        envelope.span_lines = JSON.parse(msg.spanLines)
-      }
-      catch {
-        envelope.span_lines = msg.spanLines
-      }
-    }
-    if (p.wrapper && p.wrapper.old_seqs.length > 0)
-      envelope.old_seqs = p.wrapper.old_seqs
+  // The raw-JSON debug envelope (hidden / unsupported_provider rows). The pure
+  // builder lives in chatRawJson so its proto-field copying and parse-failure
+  // fallbacks are unit-testable without mounting a component.
+  const rawJson = (): string =>
+    buildRawJsonEnvelope(props.message, parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
 
-    if (p.wrapper) {
-      envelope.messages = p.wrapper.messages
-      return JSON.stringify(envelope)
-    }
+  const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => props.premeasureMode ? undefined : prettifyJson(rawJson()))
 
-    try {
-      envelope.content = JSON.parse(p.rawText)
-      return JSON.stringify(envelope)
-    }
-    catch {
-      return p.rawText
-    }
-  }
-
-  const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => prettifyJson(rawJson()))
+  // Reactive, memoized pretty raw JSON for the displayed block. Gated on the only two
+  // categories that render it (hidden / unsupported_provider) so the proto-envelope
+  // build + FracturedJson reformat stays lazy for every other bubble (matching rawJson's
+  // plain-function intent), while the rows that DO show it reformat once per change
+  // instead of on every TokenizedCode `props.code` read (2-3x per reactive pass).
+  const prettyRawJson = createMemo(() => {
+    const kind = category().kind
+    if (kind !== 'hidden' && kind !== 'unsupported_provider')
+      return ''
+    return prettifyJson(rawJson())
+  })
 
   // Look up the parsed sibling tool_use for tool_result bubbles.
   const toolUseParsed = createMemo(() => {
@@ -310,7 +285,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const hasToolResultDiff = () => toolMeta()?.hasDiff ?? false
   const hasCopyableResult = () => toolMeta()?.hasCopyable ?? false
 
-  const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => toolMeta()?.copyableContent() ?? undefined)
+  const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => props.premeasureMode ? undefined : toolMeta()?.copyableContent() ?? undefined)
 
   const diffView = () => props.host?.localDiffView ?? prefs.diffView()
   const toggleDiffView = () => props.host?.onSetLocalDiffView?.(diffView() === 'unified' ? 'split' : 'unified')
@@ -333,18 +308,27 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
-    onCopyJson: copyJson,
-    jsonCopied,
+    get onCopyJson() { return copyJson },
+    get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },
     get createdAt() { return props.message.createdAt },
     get expandAgentThoughts() { return prefs.expandAgentThoughts() },
+    // Resolve the row's expand-toggle UI key ONCE here (kind + provider), so the
+    // thinking-style renderers read the same key ChatView resolved -- see
+    // expandedUiKeyFor. Getter so the literal stays referentially stable while
+    // tracking a category/provider change.
+    get expandUiKey() { return expandedUiKeyFor(category().kind, props.message.agentProvider) },
     get toolUseParsed() { return toolUseParsed() },
     get toolResultParsed() { return toolResultParsed() },
+    get renderCache() { return props.host?.renderCache },
+    syntaxHighlightingPaused: () => props.host?.syntaxHighlightingPaused?.() ?? false,
+    textSelectionActive: () => props.host?.textSelectionActive?.() ?? false,
     get spanColor() { return props.message.spanColor },
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
     commandStream: () => props.host?.commandStream?.(),
     get getMessageUiState() { return props.host?.getMessageUiState },
-    get setMessageUiState() { return props.host?.setMessageUiState },
+    get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
+    get premeasureMode() { return props.premeasureMode === true },
   }
 
   // Quotable text dispatch: each provider plugin reads its own wire format
@@ -361,7 +345,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
-  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => extractQuotableText() ?? undefined)
+  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode ? undefined : extractQuotableText() ?? undefined)
 
   const rowClass = () => messageRowClass(category().kind, props.message.source)
   const isLocalPending = () => props.message.id.startsWith('local-')
@@ -401,12 +385,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const renderContent = () =>
     renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider)
 
-  // The raw-JSON last-resort block (shiki-highlighted), shared by the `hidden`
-  // category and the unsupported-provider error surface so the shiki/innerHTML
-  // incantation and its lint-disable live in one place and can't drift.
+  // The raw-JSON last-resort block (highlighted as token spans via the async
+  // token worker), shared by the `hidden` category and the unsupported-provider
+  // error surface so the rendering lives in one place and can't drift. Copy is
+  // handled by the row's ToolHeaderActions; rendering token <span>s (not a
+  // shiki <pre>) means the markdown copy-button injector never targets it.
   const rawJsonBlock = () => (
-    // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input
-    <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={renderJsonHighlight(prettifyJson(rawJson()))} />
+    <JsonHighlightHtml class={chatStyles.hiddenMessageJson} code={prettyRawJson()} context={renderContext} />
   )
 
   // Loud surface for a message whose `agentProvider` is UNSPECIFIED or has no
@@ -423,12 +408,92 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   )
 
   onMount(() => {
+    if (props.premeasureMode)
+      return
     if (!contentRef)
       return
-    const disposers = injectCopyButtons(contentRef)
-    onCleanup(() => {
+    const el = contentRef
+    let disposers: Array<() => void> = []
+    let idle: number | undefined
+    let observer: MutationObserver | undefined
+    let reinjectAfterSelection = false
+    const isTextSelectionActive = () => untrack(() => props.host?.textSelectionActive?.() ?? false)
+    const disposeAll = () => {
       for (const d of disposers)
         d()
+      disposers = []
+    }
+    // (Re-)inject copy buttons over the CURRENT content. Disconnect the observer across
+    // the injection so our own appendChild(host) writes don't re-trigger it (which would
+    // loop). Dispose the prior roots first: an async re-render replaces the markdown
+    // <div>'s innerHTML wholesale, orphaning the old buttons' Solid roots, so we drop them
+    // and re-apply to the new <pre> elements.
+    const reinject = () => {
+      observer?.disconnect()
+      disposeAll()
+      disposers = injectCopyButtons(el)
+      observer?.observe(el, { childList: true, subtree: true })
+    }
+    // Defer (re-)injection to idle: the querySelectorAll('pre') + per-<pre> button render
+    // is post-mount chrome, not part of the first paint. A row that flings past unmounts
+    // and cancels the handle before it fires, so the work is skipped for rows that scroll
+    // by and runs only for rows that settle visible. The debounce also coalesces the burst
+    // of mutations from one re-render into a single re-injection.
+    const schedule = () => {
+      if (isTextSelectionActive()) {
+        reinjectAfterSelection = true
+        return
+      }
+      if (idle !== undefined)
+        cancelIdle(idle)
+      idle = requestIdle(() => {
+        idle = undefined
+        if (isTextSelectionActive()) {
+          reinjectAfterSelection = true
+          return
+        }
+        reinject()
+      })
+    }
+    createEffect(() => {
+      if (props.host?.textSelectionActive?.())
+        return
+      if (!reinjectAfterSelection)
+        return
+      reinjectAfterSelection = false
+      schedule()
+    })
+    // Re-apply on a CONTENT change, not just the first render: a code block's body is
+    // produced by renderMarkdown, whose syntax highlighting now lands ASYNCHRONOUSLY (the
+    // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
+    // injected buttons). A one-shot injection raced that swap -- inject before it and the
+    // button is wiped; after it and the button lands -- so a code block "sometimes" had no
+    // copy button. Observing contentRef re-injects after the swap (and after streaming
+    // re-renders / expand-collapse) regardless of timing.
+    //
+    // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
+    // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on
+    // that would dispose the button mid-click, wiping its transient "Copied" checkmark and
+    // churning every button in the bubble on each copy. Re-inject only when a mutation
+    // touches something OUTSIDE the copy-button chrome.
+    const onMutations = (records: MutationRecord[]) => {
+      for (const r of records) {
+        const node = r.target
+        const asEl = node instanceof Element ? node : node.parentElement
+        if (!asEl?.closest('.copy-code-button')) {
+          schedule()
+          return
+        }
+      }
+    }
+    observer = new MutationObserver(onMutations)
+    observer.observe(el, { childList: true, subtree: true })
+    schedule()
+    onCleanup(() => {
+      observer?.disconnect()
+      if (idle !== undefined)
+        cancelIdle(idle)
+      disposeAll()
     })
   })
 
@@ -465,7 +530,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             caller={{
               onCopyContent: hasCopyableResult() ? copyResultContent : undefined,
               contentCopied: resultCopied(),
-              onReply: extractQuotableText() ? handleReply : undefined,
+              onReply: extractQuotableText() ? (props.premeasureMode ? () => {} : handleReply) : undefined,
               onCopyMarkdown: extractQuotableText() ? copyMarkdown : undefined,
               markdownCopied: markdownCopied(),
             }}

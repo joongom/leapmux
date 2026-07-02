@@ -224,9 +224,8 @@ test.describe('Workspace Archive', () => {
       // Wait for archived section
       await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 
-      // Hover over tree node — open context menu, mention button should NOT be there
-      await packageJsonNode.hover()
-      await contextButton.click()
+      // Right-click tree node — context menu's mention button should NOT be there
+      await treeRow.click({ button: 'right' })
       await expect(mentionButton).not.toBeVisible()
     }
     finally {

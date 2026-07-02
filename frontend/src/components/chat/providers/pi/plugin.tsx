@@ -11,9 +11,9 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatUnifiedDiffText } from '../../diff'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
+import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
-import { fileEditDiffHunks, fileEditHasDiff } from '../../results/fileEditDiff'
-import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
+import { fileEditDiffHunks } from '../../results/fileEditDiff'
 import { registerProvider } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
 import {
@@ -25,7 +25,7 @@ import {
 } from './controlResponse'
 import { PiControlActions, PiControlContent } from './controls'
 import { extractPiBash } from './extractors/bash'
-import { extractPiEdit, extractPiRead, extractPiWrite, resolvePiResultDiff } from './extractors/fileEdit'
+import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
 import { piExtractTool } from './extractors/toolCommon'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from './protocol'
@@ -38,7 +38,6 @@ import {
   PiToolExecutionRenderer,
   PiToolResultRenderer,
 } from './renderers'
-import { DEFAULT_PI_EFFORT, DEFAULT_PI_MODEL, PiSettingsPanel, PiTriggerLabel } from './settings'
 
 /** Pi event types that carry no UI surface (lifecycle markers / fan-out). */
 const PI_HIDDEN_EVENT_TYPES = new Set<string>([
@@ -85,22 +84,6 @@ function isHiddenPiNotification(m: unknown): boolean {
   return describePiNotification(m) === null
 }
 
-function piFallbackDiffSources(
-  toolName: string,
-  toolUseParsed: ParsedMessageContent | undefined,
-): FileEditDiffSource[] {
-  const startPayload = toolUseParsed?.parentObject
-  if (!isObject(startPayload))
-    return []
-  if (toolName === PI_TOOL.Edit)
-    return extractPiEdit(startPayload)?.sources.filter(fileEditHasDiff) ?? []
-  if (toolName === PI_TOOL.Write) {
-    const source = extractPiWrite(startPayload)
-    return fileEditHasDiff(source) ? [source] : []
-  }
-  return []
-}
-
 function formatPiDiffSources(sources: FileEditDiffSource[]): string | null {
   if (sources.length === 0)
     return null
@@ -127,7 +110,7 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
   },
   tool_result: (_cat, parsed, context) =>
     <PiToolResultRenderer parsed={parsed} context={context} />,
-  user_content: (_cat, parsed) => <UserContentMessage parsed={parsed} />,
+  user_content: (_cat, parsed, context) => <UserContentMessage parsed={parsed} context={context} />,
   plan_execution: (_cat, parsed, context) => {
     const obj = isObject(parsed) ? parsed : null
     const text = obj && typeof obj.content === 'string' ? obj.content : ''
@@ -185,8 +168,7 @@ function piToolResultMeta(
       }
     }
 
-    const resultDiff = resolvePiResultDiff(parsed, startArgs).source
-    const sources = resultDiff ? [resultDiff] : piFallbackDiffSources(tool.toolName, toolUseParsed)
+    const sources = piResolveDiffSources(parsed, toolUseParsed)
     const hasDiff = sources.length > 0
     return {
       collapsible: false,
@@ -200,9 +182,6 @@ function piToolResultMeta(
 }
 
 const piPlugin: Provider = {
-  defaultModel: DEFAULT_PI_MODEL,
-  defaultEffort: DEFAULT_PI_EFFORT,
-  defaultPermissionMode: undefined,
   bypassPermissionMode: undefined,
   // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
   // display and labels the copy action "session file path".
@@ -391,9 +370,6 @@ const piPlugin: Provider = {
 
   ControlContent: PiControlContent,
   ControlActions: PiControlActions,
-
-  SettingsPanel: PiSettingsPanel,
-  settingsTriggerLabel: PiTriggerLabel,
 }
 
 registerProvider(AgentProvider.PI, piPlugin)

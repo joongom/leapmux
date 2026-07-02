@@ -1,6 +1,8 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
 import { CollapsibleContent } from '~/components/chat/results/CollapsibleContent'
+import { toolResultContentAnsi, toolResultContentPre } from '~/components/chat/toolStyles.css'
 
 describe('collapsibleContent', () => {
   it('renders pre body for kind="pre"', () => {
@@ -32,12 +34,83 @@ describe('collapsibleContent', () => {
     expect(container.querySelector('span')).not.toBeNull()
   })
 
+  it('keeps the ANSI render branch when escapes are outside the collapsed display slice', () => {
+    const text = 'plain prefix\n\x1B[31mred after fold\x1B[0m'
+    const { container } = render(() => (
+      <CollapsibleContent kind="ansi-or-pre" text={text} display="plain prefix" isCollapsed={true} />
+    ))
+
+    const div = container.firstElementChild as HTMLElement
+    expect(div.classList.contains(toolResultContentAnsi)).toBe(true)
+    expect(div.classList.contains(toolResultContentPre)).toBe(false)
+  })
+
   it('renders plain pre when ansi-or-pre kind sees no ANSI escapes', () => {
     const { container } = render(() => (
       <CollapsibleContent kind="ansi-or-pre" text="plain" display="plain" isCollapsed={false} />
     ))
     // No ANSI → no styled inner spans, just the plain text.
     expect(container.textContent).toBe('plain')
+  })
+
+  it('renders kind="json" as token content in the shared tool-result wrapper', () => {
+    const json = '{\n  "a": 1\n}'
+    const { container } = render(() => (
+      <CollapsibleContent kind="json" text={json} isCollapsed={false} />
+    ))
+    // jsdom has no Worker, so the async token path yields null and TokenizedCode
+    // shows the raw JSON text inside the shared toolResultContentAnsi wrapper
+    // (NOT the plain-pre fallback used by other kinds).
+    expect(container.textContent).toContain('"a": 1')
+    const div = container.firstElementChild as HTMLElement
+    expect(div.classList.contains(toolResultContentAnsi)).toBe(true)
+    expect(div.classList.contains(toolResultContentPre)).toBe(false)
+  })
+
+  it('strips ANSI escape bytes from the plain fallback while syntax work is paused', () => {
+    const { container } = render(() => (
+      <CollapsibleContent
+        kind="ansi-or-pre"
+        text={'\x1B[31mred\x1B[0m'}
+        display={'\x1B[31mred\x1B[0m'}
+        isCollapsed={false}
+        context={{ premeasureMode: true }}
+      />
+    ))
+
+    expect(container.textContent).toBe('red')
+  })
+
+  it('does not reuse visible ANSI HTML from cache during hidden premeasure', () => {
+    const text = '\x1B[31mred\x1B[0m'
+    const renderCache = createMessageRenderCacheStore().forRow('row-v1')
+
+    const visible = render(() => (
+      <CollapsibleContent
+        kind="ansi-or-pre"
+        text={text}
+        display={text}
+        isCollapsed={false}
+        context={{ renderCache }}
+      />
+    ))
+    expect(visible.container.firstElementChild?.classList.contains(toolResultContentAnsi)).toBe(true)
+
+    const premeasure = render(() => (
+      <CollapsibleContent
+        kind="ansi-or-pre"
+        text={text}
+        display={text}
+        isCollapsed={false}
+        context={{ renderCache, premeasureMode: true }}
+      />
+    ))
+    const body = premeasure.container.firstElementChild as HTMLElement
+
+    expect(body.classList.contains(toolResultContentPre)).toBe(true)
+    expect(body.classList.contains(toolResultContentAnsi)).toBe(false)
+    expect(body.querySelector('span')).toBeNull()
+    expect(body.textContent).toBe('red')
   })
 
   it('renders markdown body for kind="markdown"', () => {

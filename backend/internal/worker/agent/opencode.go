@@ -3,13 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/envutil"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 const (
@@ -31,102 +26,37 @@ type OpenCodeAgent struct {
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
 func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "opencode", []string{"OPENCODE_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
-	)
-
-	cmd.Env = envutil.FilterEnv(cmd.Environ(), "OPENCODE_CLIENT")
-	if opts.LoginShell {
-		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")
-	}
-	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &OpenCodeAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "opencode", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       opts.Model,
+	return acpStart(ctx, opts, sink, acpStartSpec[OpenCodeAgent]{
+		provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		providerName:   "opencode",
+		binaryName:     "opencode",
+		baseArgs:       []string{"acp"},
+		rcMarkerEnvKey: "OPENCODE_CLIENT",
+		sessionConfig:  acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume},
+		newAgent:       func() *OpenCodeAgent { return &OpenCodeAgent{} },
+		base:           func(a *OpenCodeAgent) *acpBase { return &a.acpBase },
+		configure: func(a *OpenCodeAgent) {
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 		},
-	}
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndPrimaryAgent
-	a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := json.Marshal(map[string]interface{}{
-		"protocolVersion": 1,
-		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities":    map[string]interface{}{},
+		afterHandshake: func(a *OpenCodeAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPrimaryAgentStartup(handshake, opts, OpenCodePrimaryAgentBuild)
+		},
 	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal initialize params: %w", err)
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
-		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
-	if err != nil {
-		return nil, err
-	}
-
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, nil)
-	if a.model == "" && handshake.CurrentModelID != "" {
-		a.model = handshake.CurrentModelID
-	}
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
-		if err := a.setModel(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
-		}
-	}
-	var requestedPrimaryAgent string
-	if opts.ExtraSettings != nil {
-		requestedPrimaryAgent = opts.ExtraSettings[OptionGroupKeyPrimaryAgent]
-	}
-	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
-		cleanup()
-		return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-	}
-
-	return a, nil
-}
-
-func buildOpenCodePrimaryAgents(modes []acpModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
-	// Copy then normalize names: OpenCode agents often report name == id or whitespace-only names.
-	normalized := make([]acpModeInfo, len(modes))
-	copy(normalized, modes)
-	for i := range normalized {
-		name := strings.TrimSpace(normalized[i].Name)
-		if name == "" || name == normalized[i].ID {
-			normalized[i].Name = ""
-		} else {
-			normalized[i].Name = name
-		}
-	}
-	return buildACPModes(normalized, currentModeID, isHiddenOpenCodePrimaryAgent)
 }
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: OpenCodePrimaryAgentBuild, Name: titleCaseID(OpenCodePrimaryAgentBuild, ""), IsDefault: true},
+		{Id: OpenCodePrimaryAgentBuild, Name: titleCaseID(OpenCodePrimaryAgentBuild, "")},
 		{Id: OpenCodePrimaryAgentPlan, Name: titleCaseID(OpenCodePrimaryAgentPlan, "")},
 	}
 }
 
-func isHiddenOpenCodePrimaryAgent(id string) bool {
+// isHiddenPrimaryAgent reports whether a primary-agent id is an internal
+// pseudo-agent that must be hidden from the picker. These ids originate in
+// OpenCode's protocol but are shared by every OpenCode-family ACP provider
+// (Kilo included), so both inject this as their primaryAgentHiddenFilter.
+func isHiddenPrimaryAgent(id string) bool {
 	switch id {
 	case openCodeHiddenCompaction, openCodeHiddenTitle, openCodeHiddenSummary:
 		return true
@@ -135,56 +65,8 @@ func isHiddenOpenCodePrimaryAgent(id string) bool {
 	}
 }
 
-func firstOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption) string {
-	for _, option := range options {
-		if option != nil && option.IsDefault && option.Id != "" {
-			return option.Id
-		}
-	}
-	for _, option := range options {
-		if option != nil && option.Id != "" {
-			return option.Id
-		}
-	}
-	return ""
-}
-
-func (a *OpenCodeAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string) error {
-	available := buildOpenCodePrimaryAgents(modes, currentModeID)
-	hasACPModeList := len(available) > 0
-	current := currentModeID
-	if !hasACPModeList {
-		available = fallbackOpenCodePrimaryAgents()
-		if current == "" {
-			current = OpenCodePrimaryAgentBuild
-		}
-	}
-	if current == "" {
-		current = firstOpenCodePrimaryAgent(available)
-	}
-
-	a.mu.Lock()
-	a.availablePrimaryAgents = available
-	a.currentPrimaryAgent = current
-	a.mu.Unlock()
-
-	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
-		if err := a.setPrimaryAgent(requestedPrimaryAgent); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
-}
-
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt
-// blocks compatible with both OpenCode and Gemini CLI.
+// blocks compatible with ACP agents.
 func buildACPPromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {
@@ -218,35 +100,36 @@ func buildACPPromptBlocks(content string, classified []classifiedAttachment) []m
 	return prompt
 }
 
-func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	return a.primaryAgentCurrentSettings()
-}
-
-func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.primaryAgentOptionGroups(fallbackOpenCodePrimaryAgents())
-}
-
-func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return a.primaryAgentUpdateSettings(s)
+// registerOpenCodeFamilyProvider registers an OpenCode-protocol provider (OpenCode, Kilo). The
+// two run different daemons but share the SAME registration shape: a primaryAgent secondary
+// channel with a per-daemon fallback agent list, dynamically-discovered models, and the
+// server-driven "effort" config option (the daemon's per-model reasoning variants, surfaced under
+// the well-known id). Only the provider enum, Start function, fallback agents, env keys, and
+// binary name vary -- so each init() reduces to one call here, mirroring the frontend's
+// registerOpenCodeProtocolProvider, instead of two near-identical registration blocks that can drift.
+func registerOpenCodeFamilyProvider(
+	provider leapmuxv1.AgentProvider,
+	start startFunc,
+	fallbackPrimaryAgents []*leapmuxv1.AvailableOption,
+	envModelKey, envEffortKey, binaryName string,
+) {
+	registerAgentFactory(
+		provider,
+		start,
+		nil, // models discovered dynamically from newSession
+		staticSecondaryGroup(modeChannelPrimaryAgent, fallbackPrimaryAgents),
+		envModelKey,
+		envEffortKey,
+		binaryName,
+	)
+	setAdditionalOptionIDs(provider, OptionIDEffort)
 }
 
 func init() {
-	registerAgentFactory(
+	registerOpenCodeFamilyProvider(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartOpenCode(ctx, opts, sink)
-		},
-		nil, // models discovered dynamically from newSession
-		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   OptionGroupKeyPrimaryAgent,
-			Label: "Primary Agent",
-			Options: []*leapmuxv1.AvailableOption{
-				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
-				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
-			},
-		}},
-		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
-		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
-		"opencode",
+		StartOpenCode,
+		fallbackOpenCodePrimaryAgents(),
+		"LEAPMUX_OPENCODE_DEFAULT_MODEL", "LEAPMUX_OPENCODE_DEFAULT_EFFORT", "opencode",
 	)
 }

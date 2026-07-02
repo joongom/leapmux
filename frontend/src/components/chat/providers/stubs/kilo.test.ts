@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
-import { input, model, option, optionGroup } from '../testUtils'
+import { input } from '../testUtils'
+import { describeACPStubBasics } from './stubBasics'
 
 // Side-effect import to register the Kilo plugin.
 import './kilo'
@@ -12,22 +13,10 @@ import './kilo'
 describe('kilo classify', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
-  it('exposes attachment capabilities', () => {
-    expect(plugin.attachments).toEqual({
-      text: true,
-      image: true,
-      pdf: true,
-      binary: true,
-    })
-  })
-
-  it('classifies agent_message_chunk as assistant_text', () => {
-    const parent = {
-      sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: 'Hello' },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_text' })
-  })
+  // Attachment caps, agent_message_chunk classification, config_option_update hiding (empty
+  // payload), and the ACP interrupt request are the standard stub behaviours. Kilo's POPULATED
+  // config_option_update case below is the genuine divergence and stays inline.
+  describeACPStubBasics(plugin, { text: true, image: true, pdf: true, binary: true })
 
   it('classifies agent_thought_chunk as assistant_thinking', () => {
     const parent = {
@@ -140,6 +129,17 @@ describe('kilo classify', () => {
     const parent = {
       sessionUpdate: 'available_commands_update',
       availableCommands: [],
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  // The backend consumes config_option_update centrally for every ACP provider, so it
+  // is hidden in the shared base classifier -- including for OpenCode/Kilo, which never
+  // opted into the per-provider hidden set. Historical rows must not render as unknown.
+  it('hides config_option_update', () => {
+    const parent = {
+      sessionUpdate: 'config_option_update',
+      configOptions: [{ id: 'model', currentValue: 'm1', options: [{ value: 'm1' }] }],
     }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
@@ -278,54 +278,24 @@ describe('kilo tool_call renderer', () => {
 describe('kilo plan mode', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
-  it('reads the current mode from extraSettings.primaryAgent', () => {
-    expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
-    expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('code')
+  it('reads the current mode from optionValues.primaryAgent', () => {
+    expect(plugin.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin.planMode?.currentMode({ optionValues: {} })).toBe('code')
   })
 
-  it('setMode writes primaryAgent through the unified onChange dispatcher', () => {
-    const onChange = vi.fn()
-    plugin.planMode?.setMode('plan', onChange)
-    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'primaryAgent', value: 'plan' })
-  })
-})
-
-describe('kilo settings panel', () => {
-  const plugin = providerFor(AgentProvider.KILO)!
-
-  it('renders primary-agent choices and updates through the unified onChange dispatcher', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'openai/gpt-5',
-      extraSettings: { primaryAgent: 'code' },
-      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
-      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
-        option('code', 'code', { isDefault: true }),
-        option('plan', 'plan'),
-      ])],
-      onChange,
-    }))
-
-    expect(screen.getByText('Primary Agent')).toBeInTheDocument()
-    expect(screen.getByTestId('primary-agent-code')).toBeInTheDocument()
-    expect(screen.getByTestId('primary-agent-plan')).toBeInTheDocument()
-
-    await fireEvent.click(screen.getByDisplayValue('plan'))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'primaryAgent', value: 'plan' })
+  it('declares primaryAgent as the plan-mode group with plan/code values', () => {
+    // The generic settings panel renders the primaryAgent option group and
+    // dispatches changes through the host; the provider only declares which
+    // group + values drive plan mode.
+    expect(plugin.planMode).toMatchObject({
+      groupKey: 'primaryAgent',
+      planValue: 'plan',
+      defaultValue: 'code',
+    })
   })
 
-  it('includes the selected primary agent in the trigger label', () => {
-    render(() => plugin.settingsTriggerLabel!({
-      model: 'openai/gpt-5',
-      extraSettings: { primaryAgent: 'plan' },
-      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
-      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
-        option('code', 'Code', { isDefault: true }),
-        option('plan', 'Plan'),
-      ])],
-    }))
-
-    expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeInTheDocument()
+  it('renders the primaryAgent group as the trigger mode segment', () => {
+    expect(plugin.triggerModeGroupKey).toBe('primaryAgent')
   })
 })
 
@@ -418,16 +388,8 @@ describe('kilo isAskUserQuestion', () => {
 describe('kilo buildInterruptContent', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
-  it('builds a cancel notification', () => {
-    const content = plugin.buildInterruptContent!('session-123')
-    const parsed = JSON.parse(content!)
-    expect(parsed).toMatchObject({
-      jsonrpc: '2.0',
-      method: 'session/cancel',
-      params: { sessionId: 'session-123' },
-    })
-  })
-
+  // The happy-path cancel request is covered by describeACPStubBasics above; this guards the
+  // empty-session edge that the shared helper does not exercise.
   it('returns null for empty session id', () => {
     expect(plugin.buildInterruptContent!('')).toBeNull()
   })

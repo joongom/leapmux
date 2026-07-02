@@ -425,7 +425,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
-			{AgentId: "agent-closed", AfterSeq: 0},
+			{AgentId: "agent-closed", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
 		},
 	}, w)
 
@@ -586,7 +586,7 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 	exitTerminalAndWait(t, svc, d, terminalID, "")
 
 	// Assertions are split so a failure on any individual condition
-	// surfaces a specific error message rather than a generic "condition
+	// surfaces a specific error message rather than an option "condition
 	// never satisfied". The disconnect notice is the behavior under test;
 	// the echoed-command check is an indirect sanity probe that the PTY
 	// actually processed input.

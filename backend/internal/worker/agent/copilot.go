@@ -2,17 +2,22 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 const (
 	CopilotCLIModeAgent     = "https://agentclientprotocol.com/protocol/session-modes#agent"
 	CopilotCLIModePlan      = "https://agentclientprotocol.com/protocol/session-modes#plan"
 	CopilotCLIModeAutopilot = "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+)
+
+// Copilot's server-driven ACP config-option ids (surfaced as mutable option groups,
+// not static templates). Declared in KnownOptionIDs so a not-running agent validates
+// them, matching the ids the live `session/set_config_option` channel reports.
+const (
+	CopilotConfigReasoningEffort = "reasoning_effort"
+	CopilotConfigAllowAll        = "allow_all"
 )
 
 // CopilotCLIAgent manages a single Copilot CLI ACP process.
@@ -22,114 +27,42 @@ type CopilotCLIAgent struct {
 
 // StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
 func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "copilot", nil, []string{"--acp", "--stdio"}, nil, opts.WorkingDir,
-	)
-
-	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &CopilotCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "copilot", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       opts.Model,
+	return acpStart(ctx, opts, sink, acpStartSpec[CopilotCLIAgent]{
+		provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		providerName: "copilot",
+		binaryName:   "copilot",
+		baseArgs:     []string{"--acp", "--stdio"},
+		newAgent:     func() *CopilotCLIAgent { return &CopilotCLIAgent{} },
+		base:         func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
+		configure: func(a *CopilotCLIAgent) {
+			a.modeChannel = modeChannelPermissionMode
+			// Copilot's reasoning-effort axis is the convention id "reasoning_effort", not the
+			// well-known "effort" -- declare it so the env-effort override maps onto it.
+			a.effortConfigID = CopilotConfigReasoningEffort
 		},
-	}
-	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndPermissionMode
-	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := json.Marshal(map[string]interface{}{
-		"protocolVersion": 1,
-		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities":    map[string]interface{}{},
+		afterHandshake: func(a *CopilotCLIAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPermissionModeStartup(handshake, opts, CopilotCLIModeAgent, opts.Model())
+		},
 	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal initialize params: %w", err)
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, nil)
-	if a.model == "" && handshake.CurrentModelID != "" {
-		a.model = handshake.CurrentModelID
-	}
-
-	a.availableModes = buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
-	a.permissionMode = handshake.CurrentModeID
-	if a.permissionMode == "" {
-		a.permissionMode = CopilotCLIModeAgent
-	}
-
-	// Parse Copilot-specific configOptions from the raw session response.
-	a.syncConfigOptions(handshake.ConfigOptions)
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
-		if err := a.setPermissionMode(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-		}
-	}
-	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
-		if err := a.setModel(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
-		}
-	}
-
-	return a, nil
 }
 
 func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: CopilotCLIModeAgent, Name: "Agent", IsDefault: true},
+		{Id: CopilotCLIModeAgent, Name: "Agent"},
 		{Id: CopilotCLIModePlan, Name: "Plan"},
 		{Id: CopilotCLIModeAutopilot, Name: "Autopilot"},
 	}
 }
 
-func (a *CopilotCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
-}
-
-func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.permissionModeOptionGroups("Mode", fallbackCopilotCLIModes())
-}
-
 func init() {
-	registerAgentFactory(
+	// model + permissionMode (static group) + Copilot's server-driven config options. Copilot
+	// has no well-known "effort" axis -- its reasoning axis is the config option
+	// "reasoning_effort" -- so `--effort` against Copilot is correctly treated as foreign.
+	registerPermissionModeConfigProvider(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartCopilotCLI(ctx, opts, sink)
-		},
-		nil, // models discovered dynamically from session/new
-		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     OptionGroupKeyPermissionMode,
-			Label:   "Mode",
-			Options: fallbackCopilotCLIModes(),
-		}},
-		"LEAPMUX_COPILOT_DEFAULT_MODEL",
-		"",
-		"copilot",
+		StartCopilotCLI,
+		fallbackCopilotCLIModes(),
+		"LEAPMUX_COPILOT_DEFAULT_MODEL", "copilot",
+		CopilotConfigReasoningEffort, CopilotConfigAllowAll,
 	)
 }

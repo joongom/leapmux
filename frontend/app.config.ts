@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +8,17 @@ import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import MagicString from 'magic-string'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
+const require = createRequire(import.meta.url)
+
+// Force the DOM-free build of decode-named-character-reference (a micromark/
+// remark-parse dependency used by the markdown pipeline). Its `browser` export
+// condition resolves to index.dom.js, which calls `document.createElement` at
+// module load -- fine on the main thread, but a `ReferenceError: document is not
+// defined` inside the markdown render worker (markdownWorker.ts), which has no DOM.
+// The default `index.js` is a lookup-table implementation that works in both, so
+// alias the bare specifier to its resolved path (the package exposes no `./index.js`
+// subpath to import directly).
+const decodeNamedCharacterReferenceNodeBuild = require.resolve('decode-named-character-reference')
 
 const PUBLIC_ASSET_WARNING_RE = /\/fonts\/\S+ referenced in .+ didn't resolve at build time/
 
@@ -96,13 +108,27 @@ export default defineConfig({
       },
     ],
     envPrefix: ['VITE_', 'LEAPMUX_'],
-    resolve: { alias: { '~': resolve(__dirname, 'src') } },
+    resolve: {
+      alias: {
+        '~': resolve(__dirname, 'src'),
+        // See decodeNamedCharacterReferenceNodeBuild above: keep the markdown
+        // worker from importing the document-dependent browser build.
+        'decode-named-character-reference': decodeNamedCharacterReferenceNodeBuild,
+      },
+    },
     optimizeDeps: {
       include: [
         // Shiki syntax highlighting — many deep sub-path imports that the
         // initial dep scan misses because they live behind lazy-loaded routes.
         'shiki/core',
         'shiki/engine/javascript',
+        // Oniguruma WASM engine (workers + editor) + inlined WASM + the lazily
+        // loaded bundled-languages map. The ~332 per-language grammar chunks are
+        // intentionally NOT listed: they must stay dynamic so Vite code-splits
+        // each into an on-demand chunk (lazy loading is the whole point).
+        'shiki/engine/oniguruma',
+        'shiki/wasm',
+        'shiki/langs',
         'shiki/langs/bash.mjs',
         'shiki/langs/c.mjs',
         'shiki/langs/cpp.mjs',
@@ -131,7 +157,6 @@ export default defineConfig({
         '@milkdown/ctx',
         '@milkdown/plugin-clipboard',
         '@milkdown/plugin-highlight',
-        '@milkdown/plugin-highlight/shiki',
         '@milkdown/plugin-history',
         '@milkdown/plugin-listener',
         '@milkdown/preset-commonmark',

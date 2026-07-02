@@ -2,12 +2,12 @@
 import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createMemo, Show } from 'solid-js'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { pickString } from '~/lib/jsonPick'
-import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { markdownContent } from '../../../markdownEditor/markdownContent.css'
-import { useSharedExpandedState } from '../../../messageRenderers'
+import { renderMarkdownForContext, useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
 import { joinMetaParts } from '../../../rendererUtils'
 import { ToolUseLayout } from '../../../toolRenderers'
@@ -21,7 +21,10 @@ import { codexStatusTitle } from './statusTitle'
 defineCodexRenderer({
   itemTypes: [CODEX_ITEM.COLLAB_AGENT_TOOL_CALL],
   render: (props) => {
-    const tool = (): string => (props.item.tool as string) || 'SpawnAgent'
+    // Default to the camelCase 'spawnAgent' the wire uses (tools are 'spawnAgent'/'wait'/
+    // 'closeAgent'), so a payload that omits `tool` still matches the checks below
+    // (isSpawnAgent, displayName) and renders the SpawnAgent layout rather than a bare title.
+    const tool = (): string => (props.item.tool as string) || 'spawnAgent'
     const status = (): string => (props.item.status as string) || ''
     const prompt = (): string => pickString(props.item, 'prompt')
     const model = (): string => pickString(props.item, 'model')
@@ -42,11 +45,11 @@ defineCodexRenderer({
     const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.CODEX_COLLAB_AGENT_TOOL_CALL)
     const modelLabel = (): string => {
       const m = model()
-      return m ? (getCachedSettingsLabel('model', m) || m) : ''
+      return m ? (getCachedSettingsLabel(AgentProvider.CODEX, 'model', m) || m) : ''
     }
     const effortLabel = (): string => {
       const e = reasoningEffort()
-      return e ? (getCachedSettingsLabel('effort', e) || e) : ''
+      return e ? (getCachedSettingsLabel(AgentProvider.CODEX, 'effort', e) || e) : ''
     }
     const spawnAgentDetails = createMemo(() => joinMetaParts([
       modelLabel() && `model: ${modelLabel()}`,
@@ -61,7 +64,11 @@ defineCodexRenderer({
         return spawnAgentDetails() ? `Subagent (${spawnAgentDetails()})` : 'Subagent'
       return renderAgentTitle(displayName()) || codexStatusTitle(displayName(), status())
     })
-    const promptHtml = createMemo(() => hasCollapsiblePrompt() ? renderMarkdown(prompt()) : '')
+    const promptHtml = createMemo(() => {
+      if (!hasCollapsiblePrompt())
+        return ''
+      return renderMarkdownForContext(prompt(), props.context)
+    })
     const summary = (): JSX.Element | undefined => {
       if (expanded())
         return undefined

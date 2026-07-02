@@ -24,6 +24,7 @@ const mockInterruptAgent = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
+const mockDeleteAgentMessage = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
@@ -34,7 +35,7 @@ vi.mock('~/api/workerRpc', () => ({
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
-  deleteAgentMessage: vi.fn(),
+  deleteAgentMessage: (...args: unknown[]) => mockDeleteAgentMessage(...args),
   listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
@@ -60,6 +61,7 @@ function setup() {
     clearMessageError: vi.fn(),
     setMessageError: vi.fn(),
     removeMessage: vi.fn(),
+    forgetAgent: vi.fn(),
   } as any
 
   const ops = useAgentOperations({
@@ -175,6 +177,7 @@ describe('useAgentOperations', () => {
             clearMessageError: vi.fn(),
             setMessageError: vi.fn(),
             removeMessage: vi.fn(),
+            forgetAgent: vi.fn(),
           } as any
 
           const ops = useAgentOperations({
@@ -230,20 +233,23 @@ describe('useAgentOperations', () => {
     })
   })
 
-  describe('handleOptionGroupChange', () => {
-    it('uses option-group metadata for default rollback and error labeling', async () => {
+  describe('handleAgentSettingChange', () => {
+    it('rolls back to the prior current value and labels the toast from the option group', async () => {
       await createRoot(async (dispose) => {
         try {
           const { tabStore, ops } = setup()
+          // The current value of an axis lives on its option group's
+          // `currentValue`; the tab derives `optionValues.opencode_mode` from it.
           const agent = create(AgentInfoSchema, {
             id: 'a-1',
             workerId: 'w-1',
-            extraSettings: { opencode_mode: 'safe' },
-            availableOptionGroups: [{
-              key: 'opencode_mode',
+            optionGroups: [{
+              id: 'opencode_mode',
               label: 'Execution Mode',
+              currentValue: 'safe',
+              defaultValue: 'safe',
               options: [
-                { id: 'safe', name: 'Safe', isDefault: true },
+                { id: 'safe', name: 'Safe' },
                 { id: 'fast', name: 'Fast' },
               ],
             }],
@@ -251,13 +257,15 @@ describe('useAgentOperations', () => {
           tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
-          await ops.handleOptionGroupChange('a-1', 'opencode_mode', 'fast')
+          await ops.handleAgentSettingChange('a-1', { sets: { opencode_mode: 'fast' } })
 
+          // One RPC carrying the uniform `{ options: { [groupKey]: value } }` payload.
           expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
             agentId: 'a-1',
-            settings: { extraSettings: { opencode_mode: 'fast' } },
+            settings: { options: { opencode_mode: 'fast' } },
           })
-          expect(tabStore.getAgentTab('a-1')?.extraSettings?.opencode_mode).toBe('safe')
+          // The failed change rolls back to the prior current value ('safe').
+          expect(tabStore.getAgentTab('a-1')?.optionValues?.opencode_mode).toBe('safe')
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))
         }
         finally {
@@ -273,21 +281,24 @@ describe('useAgentOperations', () => {
           const agent = create(AgentInfoSchema, {
             id: 'a-concurrent',
             workerId: 'w-1',
-            extraSettings: { sandbox_policy: 'workspace-write', network_access: 'restricted' },
-            availableOptionGroups: [
+            optionGroups: [
               {
-                key: 'sandbox_policy',
+                id: 'sandbox_policy',
                 label: 'Sandbox Policy',
+                currentValue: 'workspace-write',
+                defaultValue: 'workspace-write',
                 options: [
-                  { id: 'workspace-write', name: 'Workspace Write', isDefault: true },
+                  { id: 'workspace-write', name: 'Workspace Write' },
                   { id: 'danger-full-access', name: 'Full Access' },
                 ],
               },
               {
-                key: 'network_access',
+                id: 'network_access',
                 label: 'Network Access',
+                currentValue: 'restricted',
+                defaultValue: 'restricted',
                 options: [
-                  { id: 'restricted', name: 'Restricted', isDefault: true },
+                  { id: 'restricted', name: 'Restricted' },
                   { id: 'enabled', name: 'Enabled' },
                 ],
               },
@@ -303,13 +314,13 @@ describe('useAgentOperations', () => {
           mockUpdateAgentSettings.mockResolvedValueOnce({})
 
           // Launch both changes concurrently.
-          const p1 = ops.handleOptionGroupChange('a-concurrent', 'sandbox_policy', 'danger-full-access')
-          const p2 = ops.handleOptionGroupChange('a-concurrent', 'network_access', 'enabled')
+          const p1 = ops.handleAgentSettingChange('a-concurrent', { sets: { sandbox_policy: 'danger-full-access' } })
+          const p2 = ops.handleAgentSettingChange('a-concurrent', { sets: { network_access: 'enabled' } })
 
           // Both optimistic updates should be applied.
           const mid = tabStore.getAgentTab('a-concurrent')
-          expect(mid?.extraSettings?.sandbox_policy).toBe('danger-full-access')
-          expect(mid?.extraSettings?.network_access).toBe('enabled')
+          expect(mid?.optionValues?.sandbox_policy).toBe('danger-full-access')
+          expect(mid?.optionValues?.network_access).toBe('enabled')
 
           // Fail the first RPC — its rollback should only revert sandbox_policy,
           // leaving network_access intact.
@@ -318,8 +329,8 @@ describe('useAgentOperations', () => {
           await p2
 
           const final = tabStore.getAgentTab('a-concurrent')
-          expect(final?.extraSettings?.sandbox_policy).toBe('workspace-write')
-          expect(final?.extraSettings?.network_access).toBe('enabled')
+          expect(final?.optionValues?.sandbox_policy).toBe('workspace-write')
+          expect(final?.optionValues?.network_access).toBe('enabled')
         }
         finally {
           dispose()
@@ -327,15 +338,19 @@ describe('useAgentOperations', () => {
       })
     })
 
-    it('falls back to the first option when no explicit default is marked', async () => {
+    it('rolls back to unset when the group had no prior current value', async () => {
       await createRoot(async (dispose) => {
         try {
           const { tabStore, ops } = setup()
+          // No `currentValue` on the group, so the tab carries no prior value for
+          // the axis; a failed change reverts by DELETING the key (not writing ''),
+          // so agentTabOptionGroups falls through to the catalog's confirmed value
+          // instead of blanking the group with a spurious empty override.
           const agent = create(AgentInfoSchema, {
             id: 'a-2',
             workerId: 'w-1',
-            availableOptionGroups: [{
-              key: 'opencode_mode',
+            optionGroups: [{
+              id: 'opencode_mode',
               label: 'Execution Mode',
               options: [
                 { id: 'safe', name: 'Safe' },
@@ -346,9 +361,10 @@ describe('useAgentOperations', () => {
           tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
-          await ops.handleOptionGroupChange('a-2', 'opencode_mode', 'fast')
+          await ops.handleAgentSettingChange('a-2', { sets: { opencode_mode: 'fast' } })
 
-          expect(tabStore.getAgentTab('a-2')?.extraSettings?.opencode_mode).toBe('safe')
+          const values = tabStore.getAgentTab('a-2')?.optionValues
+          expect(values && 'opencode_mode' in values).toBe(false)
         }
         finally {
           dispose()
@@ -409,13 +425,47 @@ describe('useAgentOperations', () => {
         }
       })
     })
+
+    it('does not re-stamp a delivery error when the resend succeeds but the cleanup delete fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { tabStore, chatStore, ops } = setup()
+          mockSendAgentMessage.mockReset()
+          mockDeleteAgentMessage.mockReset()
+          mockShowWarnToast.mockReset()
+          const agent = create(AgentInfoSchema, { id: 'a-3', workerId: 'w-1' })
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          // A SERVER-persisted failed message (non-local id) so the deleteAgentMessage
+          // cleanup path runs.
+          chatStore.getMessages.mockReturnValue([{
+            id: 'srv-3',
+            source: MessageSource.USER,
+            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
+            contentCompression: ContentCompression.NONE,
+          }])
+          mockSendAgentMessage.mockResolvedValueOnce({}) // resend SUCCEEDS
+          mockDeleteAgentMessage.mockRejectedValueOnce(new Error('not a failed user message')) // cleanup fails
+
+          await ops.handleRetryMessage('a-3', 'srv-3')
+
+          // The resend landed, so the old bubble must NOT be re-marked as failed.
+          expect(chatStore.setMessageError).not.toHaveBeenCalled()
+          // The cleanup failure is surfaced softly, NOT as a "Retry failed".
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Could not remove the old failed message', expect.any(Error))
+          expect(mockShowWarnToast).not.toHaveBeenCalledWith('Retry failed', expect.any(Error))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
   })
 
   describe('handleAgentClose', () => {
     it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { tabStore, ops } = setup()
+          const { tabStore, chatStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
           tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-1', title: 'Agent Olivia', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
@@ -428,6 +478,8 @@ describe('useAgentOperations', () => {
           // Store mutations happened synchronously.
           expect(tabStore.getAgentTab('a-1')).toBeUndefined()
           expect(tabStore.state.tabs.find(t => t.id === 'a-1')).toBeUndefined()
+          // Chat-store per-agent state is reclaimed synchronously too (no leak).
+          expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
         }

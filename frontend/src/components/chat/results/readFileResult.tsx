@@ -1,8 +1,9 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
-import type { ParsedCatLine } from './ReadResultView'
-import { createMemo, Show } from 'solid-js'
-import { getToolResultExpanded } from '../messageRenderers'
+import type { ParsedCatLine, ReadReminder } from './ReadResultView'
+import { createMemo, For, Show } from 'solid-js'
+import { Alert } from '~/components/common/Alert'
+import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from '../messageRenderers'
 import { toolMessage, toolResultCollapsed, toolResultContentPre } from '../toolStyles.css'
 import { ReadResultView } from './ReadResultView'
 import { useCollapsedItems } from './useCollapsedLines'
@@ -23,6 +24,10 @@ export interface ReadFileResultSource {
   numLines: number
   /** Raw fallback content used when `lines` is null. */
   fallbackContent: string
+  /** `<tag>...</tag>` blocks before the body (e.g. a partial-view notice), shown as alerts when expanded. */
+  leading?: ReadReminder[]
+  /** `<tag>...</tag>` blocks after the body (e.g. usage reminders), shown as alerts when expanded. */
+  trailing?: ReadReminder[]
 }
 
 /**
@@ -69,11 +74,29 @@ export function ReadFileResultBody(props: {
 
   return (
     <div class={`${toolMessage}${collapsedClass()}`}>
+      {/* Reminder/tag alerts render only when expanded, so the collapsed default
+          stays the body-only height the off-screen estimator assumes. */}
+      <Show when={expanded()}>
+        <For each={props.source.leading ?? []}>
+          {r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}
+        </For>
+      </Show>
       <Show
         when={hasParsedLines() && items().length > 0}
         fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || 'Empty file'}</div>}
       >
-        <ReadResultView lines={displayItems()} filePath={props.source.filePath} />
+        <ReadResultView
+          lines={displayItems()}
+          filePath={props.source.filePath}
+          premeasureMode={props.context?.premeasureMode}
+          syntaxHighlightingPaused={shouldPauseSyntaxHighlighting(props.context)}
+          textSelectionActive={props.context?.textSelectionActive}
+        />
+      </Show>
+      <Show when={expanded()}>
+        <For each={props.source.trailing ?? []}>
+          {r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}
+        </For>
       </Show>
     </div>
   )

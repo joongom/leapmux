@@ -3,12 +3,9 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -16,78 +13,60 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
 func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPC(t,
-		func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		func() *GooseCLIAgent {
+			a := &GooseCLIAgent{}
+			a.modeChannel = modeChannelPermissionMode
+			return a
+		},
 		func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 	)
 }
 
 func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
-		func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		func() *GooseCLIAgent {
+			a := &GooseCLIAgent{}
+			a.modeChannel = modeChannelPermissionMode
+			return a
+		},
 		func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 		respond,
 	)
 }
 
 func installFakeGooseCLI(t *testing.T, scenario string) {
-	t.Helper()
-
-	dir := t.TempDir()
-	launcher := filepath.Join(dir, "goose")
-	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_GOOSE_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessGooseCLI --\n", scenario, os.Args[0])
-	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("GO_WANT_HELPER_PROCESS_GOOSE", "1")
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary:    "goose",
+		helperRun: "TestHelperProcessGooseCLI",
+		wantEnv:   "GO_WANT_HELPER_PROCESS_GOOSE",
+		env:       []string{"LEAPMUX_GOOSE_TEST_SCENARIO=" + scenario},
+	})
 }
 
-func TestHelperProcessGooseCLI(t *testing.T) {
-	if os.Getenv("GO_WANT_HELPER_PROCESS_GOOSE") != "1" {
-		return
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-	defer func() { _ = writer.Flush() }()
-
+func TestHelperProcessGooseCLI(*testing.T) {
 	scenario := os.Getenv("LEAPMUX_GOOSE_TEST_SCENARIO")
-
-	writeResponse := func(id json.RawMessage, body string, isError bool) {
-		field := "result"
-		if isError {
-			field = "error"
-		}
-		_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"%s":%s}`+"\n", string(id), field, body)
-		_ = writer.Flush()
-	}
-
-	for scanner.Scan() {
-		var req struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		switch req.Method {
+	runFakeACPServer("GO_WANT_HELPER_PROCESS_GOOSE", func(method string) (string, bool, bool) {
+		switch method {
 		case acpMethodInitialize:
-			writeResponse(req.ID, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false)
+			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false, true
 		case acpMethodSessionNew:
-			writeResponse(req.ID, `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"},{"value":"chat","name":"Chat"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false)
+			return `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"},{"value":"chat","name":"Chat"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false, true
 		case acpMethodSessionLoad:
 			if scenario == "load" {
-				writeResponse(req.ID, `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false)
+				return `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false, true
 			}
-		case acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
-			writeResponse(req.ID, `{}`, false)
+			return "", false, false
+		case acpMethodSessionSetConfigOption, acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
+			return `{}`, false, true
+		default:
+			return "", false, false
 		}
-	}
-	os.Exit(0)
+	})
 }
 
 func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
@@ -111,13 +90,14 @@ func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
 	assert.Equal(t, "goose-new", agent.sessionID)
 	assert.Equal(t, "default-model", agent.model)
 	assert.Equal(t, GooseCLIModeAuto, agent.permissionMode)
-	require.Len(t, agent.AvailableModels(), 2)
-	assert.Equal(t, "default-model", agent.AvailableModels()[0].GetId())
-	require.Len(t, agent.AvailableOptionGroups(), 1)
-	assert.Equal(t, "permissionMode", agent.AvailableOptionGroups()[0].GetKey())
+	require.Len(t, agent.availableModels, 2)
+	assert.Equal(t, "default-model", agent.availableModels[0].GetId())
+	groups := agent.OptionGroups()
+	modeGroup := optionids.GroupByID(groups, OptionIDPermissionMode)
+	require.NotNil(t, modeGroup)
 	// Verify mode names are capitalized (e.g. "smart_approve" → "Smart Approve").
-	modeNames := make([]string, 0, len(agent.AvailableOptionGroups()[0].GetOptions()))
-	for _, opt := range agent.AvailableOptionGroups()[0].GetOptions() {
+	modeNames := make([]string, 0, len(modeGroup.GetOptions()))
+	for _, opt := range modeGroup.GetOptions() {
 		modeNames = append(modeNames, opt.GetName())
 	}
 	assert.Equal(t, []string{"Auto", "Approve", "Smart Approve", "Chat"}, modeNames)
@@ -150,13 +130,13 @@ func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
 func TestGooseUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 	agent, requests := newGooseAgentForRPC(t)
 	agent.availableModes = []*leapmuxv1.AvailableOption{
-		{Id: GooseCLIModeAuto, Name: "Auto", IsDefault: true},
+		{Id: GooseCLIModeAuto, Name: "Auto"},
 		{Id: GooseCLIModeApprove, Name: "Approve"},
 	}
 
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		Model:          "fast-model",
-		PermissionMode: GooseCLIModeApprove,
+	updated := agent.UpdateSettings(map[string]string{
+		OptionIDModel:          "fast-model",
+		OptionIDPermissionMode: GooseCLIModeApprove,
 	})
 	require.True(t, updated)
 	assert.Equal(t, "fast-model", agent.model)
@@ -164,8 +144,9 @@ func TestGooseUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, acpMethodSessionSetModel, recorded[0].Method)
-	assert.Equal(t, "fast-model", recorded[0].Params["modelId"])
+	assert.Equal(t, acpMethodSessionSetConfigOption, recorded[0].Method)
+	assert.Equal(t, acpConfigOptionIDModel, recorded[0].Params["configId"])
+	assert.Equal(t, "fast-model", recorded[0].Params["value"])
 	assert.Equal(t, acpMethodSessionSetMode, recorded[1].Method)
 	assert.Equal(t, GooseCLIModeApprove, recorded[1].Params["modeId"])
 }
@@ -181,11 +162,16 @@ func TestGooseCancelSessionSendsACPMethod(t *testing.T) {
 }
 
 func TestGooseAvailableOptionGroupsFallsBack(t *testing.T) {
-	agent := &GooseCLIAgent{}
+	// configure sets both the channel and the static fallback list; OptionGroups serves
+	// that fallback before the session reports a permission-mode catalog.
+	agent := &GooseCLIAgent{acpBase: acpBase{
+		modeChannel:       modeChannelPermissionMode,
+		secondaryFallback: fallbackGooseCLIModes(),
+	}}
 
-	groups := agent.AvailableOptionGroups()
+	groups := agent.OptionGroups()
 	require.Len(t, groups, 1)
-	assert.Equal(t, "permissionMode", groups[0].GetKey())
+	assert.Equal(t, "permissionMode", groups[0].GetId())
 	assert.Equal(t, GooseCLIModeAuto, groups[0].GetOptions()[0].GetId())
 }
 

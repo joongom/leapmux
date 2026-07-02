@@ -16,10 +16,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c](#githubcomazurego-ansiterm-v000-20250102033503-faa5f7b0171c)
 - [github.com/beorn7/perks v1.0.1](#githubcombeorn7perks-v101)
 - [github.com/cenkalti/backoff/v4 v4.3.0](#githubcomcenkaltibackoffv4-v430)
-- [github.com/cenkalti/backoff/v5 v5.0.3](#githubcomcenkaltibackoffv5-v503)
+- [github.com/cenkalti/backoff/v6 v6.0.1](#githubcomcenkaltibackoffv6-v601)
 - [github.com/cespare/xxhash/v2 v2.3.0](#githubcomcesparexxhashv2-v230)
 - [github.com/cloudflare/circl v1.6.3](#githubcomcloudflarecircl-v163)
-- [github.com/coder/websocket v1.8.14](#githubcomcoderwebsocket-v1814)
+- [github.com/coder/websocket v1.8.15](#githubcomcoderwebsocket-v1815)
 - [github.com/containerd/errdefs v1.0.0](#githubcomcontainerderrdefs-v100)
 - [github.com/containerd/errdefs/pkg v0.3.0](#githubcomcontainerderrdefspkg-v030)
 - [github.com/containerd/log v0.1.0](#githubcomcontainerdlog-v010)
@@ -46,7 +46,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6](#githubcomjackcpgerrcode-v000-20250907135507-afb5586c32a6)
 - [github.com/jackc/pgpassfile v1.0.0](#githubcomjackcpgpassfile-v100)
 - [github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761](#githubcomjackcpgservicefile-v000-20240606120523-5a60cdf6a761)
-- [github.com/jackc/pgx/v5 v5.9.2](#githubcomjackcpgxv5-v592)
+- [github.com/jackc/pgx/v5 v5.10.0](#githubcomjackcpgxv5-v5100)
 - [github.com/jackc/puddle/v2 v2.2.2](#githubcomjackcpuddlev2-v222)
 - [github.com/klauspost/compress v1.18.6](#githubcomklauspostcompress-v1186)
 - [github.com/knadh/koanf/maps v0.1.2](#githubcomknadhkoanfmaps-v012)
@@ -82,7 +82,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/pressly/goose/v3 v3.27.1](#githubcompresslygoosev3-v3271)
 - [github.com/prometheus/client_golang v1.23.2](#githubcomprometheusclient_golang-v1232)
 - [github.com/prometheus/client_model v0.6.2](#githubcomprometheusclient_model-v062)
-- [github.com/prometheus/common v0.68.0](#githubcomprometheuscommon-v0680)
+- [github.com/prometheus/common v0.68.1](#githubcomprometheuscommon-v0681)
 - [github.com/prometheus/procfs v0.20.1](#githubcomprometheusprocfs-v0201)
 - [github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec](#githubcomremyoudomphengbigfft-v000-20230129092748-24d4a6f8daec)
 - [github.com/sethvargo/go-retry v0.3.0](#githubcomsethvargogo-retry-v030)
@@ -102,27 +102,27 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go.opentelemetry.io/otel/trace v1.43.0](#goopentelemetryiooteltrace-v1430)
 - [go.uber.org/multierr v1.11.0](#gouberorgmultierr-v1110)
 - [go.yaml.in/yaml/v3 v3.0.4](#goyamlinyamlv3-v304)
-- [golang.org/x/crypto v0.52.0](#golangorgxcrypto-v0520)
-- [golang.org/x/net v0.55.0](#golangorgxnet-v0550)
+- [golang.org/x/crypto v0.53.0](#golangorgxcrypto-v0530)
+- [golang.org/x/net v0.56.0](#golangorgxnet-v0560)
 - [golang.org/x/oauth2 v0.36.0](#golangorgxoauth2-v0360)
-- [golang.org/x/sync v0.20.0](#golangorgxsync-v0200)
-- [golang.org/x/sys v0.45.0](#golangorgxsys-v0450)
-- [golang.org/x/term v0.43.0](#golangorgxterm-v0430)
-- [golang.org/x/text v0.37.0](#golangorgxtext-v0370)
+- [golang.org/x/sync v0.21.0](#golangorgxsync-v0210)
+- [golang.org/x/sys v0.46.0](#golangorgxsys-v0460)
+- [golang.org/x/term v0.44.0](#golangorgxterm-v0440)
+- [golang.org/x/text v0.38.0](#golangorgxtext-v0380)
 - [google.golang.org/grpc v1.81.1](#googlegolangorggrpc-v1811)
 - [google.golang.org/protobuf v1.36.11](#googlegolangorgprotobuf-v13611)
 - [gopkg.in/yaml.v3 v3.0.1](#gopkginyamlv3-v301)
-- [modernc.org/libc v1.72.5](#moderncorglibc-v1725)
+- [modernc.org/libc v1.73.4](#moderncorglibc-v1734)
 - [modernc.org/mathutil v1.7.1](#moderncorgmathutil-v171)
 - [modernc.org/memory v1.11.0](#moderncorgmemory-v1110)
-- [modernc.org/sqlite v1.51.0](#moderncorgsqlite-v1510)
+- [modernc.org/sqlite v1.52.0](#moderncorgsqlite-v1520)
 
 ### Rust Dependencies
 
 - [adler2 2.0.1 (0BSD OR MIT OR Apache-2.0)](#adler2-201-0bsd-or-mit-or-apache-20)
 - [aho-corasick 1.1.4 (Unlicense OR MIT)](#aho-corasick-114-unlicense-or-mit)
 - [alloc-no-stdlib 2.0.4 (BSD-3-Clause)](#alloc-no-stdlib-204-bsd-3-clause)
-- [alloc-stdlib 0.2.2 (BSD-3-Clause)](#alloc-stdlib-022-bsd-3-clause)
+- [alloc-stdlib 0.2.4 (BSD-3-Clause)](#alloc-stdlib-024-bsd-3-clause)
 - [android_system_properties 0.1.5 (MIT/Apache-2.0)](#android_system_properties-015-mitapache-20)
 - [anyhow 1.0.102 (MIT OR Apache-2.0)](#anyhow-10102-mit-or-apache-20)
 - [arboard 3.6.1 (MIT OR Apache-2.0)](#arboard-361-mit-or-apache-20)
@@ -145,13 +145,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [bit-set 0.8.0 (Apache-2.0 OR MIT)](#bit-set-080-apache-20-or-mit)
 - [bit-vec 0.8.0 (Apache-2.0 OR MIT)](#bit-vec-080-apache-20-or-mit)
 - [bitflags 1.3.2 (MIT/Apache-2.0)](#bitflags-132-mitapache-20)
-- [bitflags 2.11.1 (MIT OR Apache-2.0)](#bitflags-2111-mit-or-apache-20)
+- [bitflags 2.13.0 (MIT OR Apache-2.0)](#bitflags-2130-mit-or-apache-20)
 - [block-buffer 0.10.4 (MIT OR Apache-2.0)](#block-buffer-0104-mit-or-apache-20)
-- [block-buffer 0.12.0 (MIT OR Apache-2.0)](#block-buffer-0120-mit-or-apache-20)
+- [block-buffer 0.12.1 (MIT OR Apache-2.0)](#block-buffer-0121-mit-or-apache-20)
 - [block2 0.6.2 (MIT)](#block2-062-mit)
 - [blocking 1.6.2 (Apache-2.0 OR MIT)](#blocking-162-apache-20-or-mit)
-- [brotli 8.0.3 (BSD-3-Clause AND MIT)](#brotli-803-bsd-3-clause-and-mit)
-- [brotli-decompressor 5.0.1 (BSD-3-Clause/MIT)](#brotli-decompressor-501-bsd-3-clausemit)
+- [brotli 8.0.4 (BSD-3-Clause AND MIT)](#brotli-804-bsd-3-clause-and-mit)
+- [brotli-decompressor 5.0.3 (BSD-3-Clause/MIT)](#brotli-decompressor-503-bsd-3-clausemit)
 - [bs58 0.5.1 (MIT/Apache-2.0)](#bs58-051-mitapache-20)
 - [bumpalo 3.20.3 (MIT OR Apache-2.0)](#bumpalo-3203-mit-or-apache-20)
 - [bytemuck 1.25.0 (Zlib OR Apache-2.0 OR MIT)](#bytemuck-1250-zlib-or-apache-20-or-mit)
@@ -164,12 +164,12 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [cargo_metadata 0.19.2 (MIT)](#cargo_metadata-0192-mit)
 - [cargo_toml 0.22.3 (Apache-2.0 OR MIT)](#cargo_toml-0223-apache-20-or-mit)
 - [cargo-platform 0.1.9 (MIT OR Apache-2.0)](#cargo-platform-019-mit-or-apache-20)
-- [cc 1.2.63 (MIT OR Apache-2.0)](#cc-1263-mit-or-apache-20)
+- [cc 1.2.64 (MIT OR Apache-2.0)](#cc-1264-mit-or-apache-20)
 - [cesu8 1.1.0 (Apache-2.0/MIT)](#cesu8-110-apache-20mit)
 - [cfb 0.7.3 (MIT)](#cfb-073-mit)
 - [cfg-expr 0.15.8 (MIT OR Apache-2.0)](#cfg-expr-0158-mit-or-apache-20)
 - [cfg-if 1.0.4 (MIT OR Apache-2.0)](#cfg-if-104-mit-or-apache-20)
-- [chrono 0.4.44 (MIT OR Apache-2.0)](#chrono-0444-mit-or-apache-20)
+- [chrono 0.4.45 (MIT OR Apache-2.0)](#chrono-0445-mit-or-apache-20)
 - [clipboard-win 5.4.1 (BSL-1.0)](#clipboard-win-541-bsl-10)
 - [combine 4.6.7 (MIT)](#combine-467-mit)
 - [concurrent-queue 2.5.0 (Apache-2.0 OR MIT)](#concurrent-queue-250-apache-20-or-mit)
@@ -281,7 +281,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [hermit-abi 0.5.2 (MIT OR Apache-2.0)](#hermit-abi-052-mit-or-apache-20)
 - [hex 0.4.3 (MIT OR Apache-2.0)](#hex-043-mit-or-apache-20)
 - [html5ever 0.38.0 (MIT OR Apache-2.0)](#html5ever-0380-mit-or-apache-20)
-- [http 1.4.1 (MIT OR Apache-2.0)](#http-141-mit-or-apache-20)
+- [http 1.4.2 (MIT OR Apache-2.0)](#http-142-mit-or-apache-20)
 - [http-body 1.0.1 (MIT)](#http-body-101-mit)
 - [http-body-util 0.1.3 (MIT)](#http-body-util-013-mit)
 - [httparse 1.10.1 (MIT OR Apache-2.0)](#httparse-1101-mit-or-apache-20)
@@ -317,7 +317,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [jni-sys 0.3.1 (MIT OR Apache-2.0)](#jni-sys-031-mit-or-apache-20)
 - [jni-sys 0.4.1 (MIT OR Apache-2.0)](#jni-sys-041-mit-or-apache-20)
 - [jni-sys-macros 0.4.1 (MIT OR Apache-2.0)](#jni-sys-macros-041-mit-or-apache-20)
-- [js-sys 0.3.99 (MIT OR Apache-2.0)](#js-sys-0399-mit-or-apache-20)
+- [js-sys 0.3.102 (MIT OR Apache-2.0)](#js-sys-03102-mit-or-apache-20)
 - [json-patch 3.0.1 (MIT/Apache-2.0)](#json-patch-301-mitapache-20)
 - [jsonptr 0.6.3 (MIT OR Apache-2.0)](#jsonptr-063-mit-or-apache-20)
 - [keyboard-types 0.7.0 (MIT OR Apache-2.0)](#keyboard-types-070-mit-or-apache-20)
@@ -331,9 +331,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [linux-raw-sys 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#linux-raw-sys-0121-apache-20-with-llvm-exception-or-apache-20-or-mit)
 - [litemap 0.8.2 (Unicode-3.0)](#litemap-082-unicode-30)
 - [lock_api 0.4.14 (MIT OR Apache-2.0)](#lock_api-0414-mit-or-apache-20)
-- [log 0.4.30 (MIT OR Apache-2.0)](#log-0430-mit-or-apache-20)
+- [log 0.4.32 (MIT OR Apache-2.0)](#log-0432-mit-or-apache-20)
 - [markup5ever 0.38.0 (MIT OR Apache-2.0)](#markup5ever-0380-mit-or-apache-20)
-- [memchr 2.8.1 (Unlicense OR MIT)](#memchr-281-unlicense-or-mit)
+- [memchr 2.8.2 (Unlicense OR MIT)](#memchr-282-unlicense-or-mit)
 - [memoffset 0.9.1 (MIT)](#memoffset-091-mit)
 - [mime 0.3.17 (MIT OR Apache-2.0)](#mime-0317-mit-or-apache-20)
 - [miniz_oxide 0.8.9 (MIT OR Zlib OR Apache-2.0)](#miniz_oxide-089-mit-or-zlib-or-apache-20)
@@ -401,10 +401,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [proc-macro-error 1.0.4 (MIT OR Apache-2.0)](#proc-macro-error-104-mit-or-apache-20)
 - [proc-macro-error-attr 1.0.4 (MIT OR Apache-2.0)](#proc-macro-error-attr-104-mit-or-apache-20)
 - [proc-macro2 1.0.106 (MIT OR Apache-2.0)](#proc-macro2-10106-mit-or-apache-20)
-- [prost 0.14.3 (Apache-2.0)](#prost-0143-apache-20)
-- [prost-build 0.14.3 (Apache-2.0)](#prost-build-0143-apache-20)
-- [prost-derive 0.14.3 (Apache-2.0)](#prost-derive-0143-apache-20)
-- [prost-types 0.14.3 (Apache-2.0)](#prost-types-0143-apache-20)
+- [prost 0.14.4 (Apache-2.0)](#prost-0144-apache-20)
+- [prost-build 0.14.4 (Apache-2.0)](#prost-build-0144-apache-20)
+- [prost-derive 0.14.4 (Apache-2.0)](#prost-derive-0144-apache-20)
+- [prost-types 0.14.4 (Apache-2.0)](#prost-types-0144-apache-20)
 - [pxfm 0.1.29 (BSD-3-Clause OR Apache-2.0)](#pxfm-0129-bsd-3-clause-or-apache-20)
 - [quick-error 2.0.1 (MIT/Apache-2.0)](#quick-error-201-mitapache-20)
 - [quick-xml 0.39.4 (MIT)](#quick-xml-0394-mit)
@@ -416,9 +416,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [redox_users 0.5.2 (MIT)](#redox_users-052-mit)
 - [ref-cast 1.0.25 (MIT OR Apache-2.0)](#ref-cast-1025-mit-or-apache-20)
 - [ref-cast-impl 1.0.25 (MIT OR Apache-2.0)](#ref-cast-impl-1025-mit-or-apache-20)
-- [regex 1.12.3 (MIT OR Apache-2.0)](#regex-1123-mit-or-apache-20)
+- [regex 1.12.4 (MIT OR Apache-2.0)](#regex-1124-mit-or-apache-20)
 - [regex-automata 0.4.14 (MIT OR Apache-2.0)](#regex-automata-0414-mit-or-apache-20)
-- [regex-syntax 0.8.10 (MIT OR Apache-2.0)](#regex-syntax-0810-mit-or-apache-20)
+- [regex-syntax 0.8.11 (MIT OR Apache-2.0)](#regex-syntax-0811-mit-or-apache-20)
 - [reqwest 0.13.4 (MIT OR Apache-2.0)](#reqwest-0134-mit-or-apache-20)
 - [rfd 0.16.0 (MIT)](#rfd-0160-mit)
 - [rustc_version 0.4.1 (MIT OR Apache-2.0)](#rustc_version-041-mit-or-apache-20)
@@ -441,8 +441,8 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [serde_repr 0.1.20 (MIT OR Apache-2.0)](#serde_repr-0120-mit-or-apache-20)
 - [serde_spanned 0.6.9 (MIT OR Apache-2.0)](#serde_spanned-069-mit-or-apache-20)
 - [serde_spanned 1.1.1 (MIT OR Apache-2.0)](#serde_spanned-111-mit-or-apache-20)
-- [serde_with 3.20.0 (MIT OR Apache-2.0)](#serde_with-3200-mit-or-apache-20)
-- [serde_with_macros 3.20.0 (MIT OR Apache-2.0)](#serde_with_macros-3200-mit-or-apache-20)
+- [serde_with 3.21.0 (MIT OR Apache-2.0)](#serde_with-3210-mit-or-apache-20)
+- [serde_with_macros 3.21.0 (MIT OR Apache-2.0)](#serde_with_macros-3210-mit-or-apache-20)
 - [serde-untagged 0.1.9 (MIT OR Apache-2.0)](#serde-untagged-019-mit-or-apache-20)
 - [serialize-to-javascript 0.1.2 (MIT OR Apache-2.0)](#serialize-to-javascript-012-mit-or-apache-20)
 - [serialize-to-javascript-impl 0.1.2 (MIT OR Apache-2.0)](#serialize-to-javascript-impl-012-mit-or-apache-20)
@@ -454,7 +454,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [simd-adler32 0.3.9 (MIT)](#simd-adler32-039-mit)
 - [siphasher 1.0.3 (MIT/Apache-2.0)](#siphasher-103-mitapache-20)
 - [slab 0.4.12 (MIT)](#slab-0412-mit)
-- [smallvec 1.15.1 (MIT OR Apache-2.0)](#smallvec-1151-mit-or-apache-20)
+- [smallvec 1.15.2 (MIT OR Apache-2.0)](#smallvec-1152-mit-or-apache-20)
 - [socket2 0.6.4 (MIT OR Apache-2.0)](#socket2-064-mit-or-apache-20)
 - [softbuffer 0.4.8 (MIT OR Apache-2.0)](#softbuffer-048-mit-or-apache-20)
 - [soup3 0.5.0 (MIT)](#soup3-050-mit)
@@ -465,7 +465,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [strsim 0.11.1 (MIT)](#strsim-0111-mit)
 - [swift-rs 1.0.7 (MIT OR Apache-2.0)](#swift-rs-107-mit-or-apache-20)
 - [syn 1.0.109 (MIT OR Apache-2.0)](#syn-10109-mit-or-apache-20)
-- [syn 2.0.117 (MIT OR Apache-2.0)](#syn-20117-mit-or-apache-20)
+- [syn 2.0.118 (MIT OR Apache-2.0)](#syn-20118-mit-or-apache-20)
 - [sync_wrapper 1.0.2 (Apache-2.0)](#sync_wrapper-102-apache-20)
 - [synstructure 0.13.2 (MIT)](#synstructure-0132-mit)
 - [system-deps 6.2.2 (MIT OR Apache-2.0)](#system-deps-622-mit-or-apache-20)
@@ -493,9 +493,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [thiserror-impl 1.0.69 (MIT OR Apache-2.0)](#thiserror-impl-1069-mit-or-apache-20)
 - [thiserror-impl 2.0.18 (MIT OR Apache-2.0)](#thiserror-impl-2018-mit-or-apache-20)
 - [tiff 0.11.3 (MIT)](#tiff-0113-mit)
-- [time 0.3.47 (MIT OR Apache-2.0)](#time-0347-mit-or-apache-20)
-- [time-core 0.1.8 (MIT OR Apache-2.0)](#time-core-018-mit-or-apache-20)
-- [time-macros 0.2.27 (MIT OR Apache-2.0)](#time-macros-0227-mit-or-apache-20)
+- [time 0.3.49 (MIT OR Apache-2.0)](#time-0349-mit-or-apache-20)
+- [time-core 0.1.9 (MIT OR Apache-2.0)](#time-core-019-mit-or-apache-20)
+- [time-macros 0.2.29 (MIT OR Apache-2.0)](#time-macros-0229-mit-or-apache-20)
 - [tinystr 0.8.3 (Unicode-3.0)](#tinystr-083-unicode-30)
 - [tinyvec 1.11.0 (Zlib OR Apache-2.0 OR MIT)](#tinyvec-1110-zlib-or-apache-20-or-mit)
 - [tinyvec_macros 0.1.1 (MIT OR Apache-2.0 OR Zlib)](#tinyvec_macros-011-mit-or-apache-20-or-zlib)
@@ -532,13 +532,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [unic-ucd-ident 0.9.0 (MIT/Apache-2.0)](#unic-ucd-ident-090-mitapache-20)
 - [unic-ucd-version 0.9.0 (MIT/Apache-2.0)](#unic-ucd-version-090-mitapache-20)
 - [unicode-ident 1.0.24 ((MIT OR Apache-2.0) AND Unicode-3.0)](#unicode-ident-1024-mit-or-apache-20-and-unicode-30)
-- [unicode-segmentation 1.13.2 (MIT OR Apache-2.0)](#unicode-segmentation-1132-mit-or-apache-20)
+- [unicode-segmentation 1.13.3 (MIT OR Apache-2.0)](#unicode-segmentation-1133-mit-or-apache-20)
 - [unicode-xid 0.2.6 (MIT OR Apache-2.0)](#unicode-xid-026-mit-or-apache-20)
 - [url 2.5.8 (MIT OR Apache-2.0)](#url-258-mit-or-apache-20)
 - [urlpattern 0.3.0 (MIT)](#urlpattern-030-mit)
 - [utf-8 0.7.6 (MIT OR Apache-2.0)](#utf-8-076-mit-or-apache-20)
 - [utf8_iter 1.0.4 (Apache-2.0 OR MIT)](#utf8_iter-104-apache-20-or-mit)
-- [uuid 1.23.2 (Apache-2.0 OR MIT)](#uuid-1232-apache-20-or-mit)
+- [uuid 1.23.3 (Apache-2.0 OR MIT)](#uuid-1233-apache-20-or-mit)
 - [version_check 0.9.5 (MIT/Apache-2.0)](#version_check-095-mitapache-20)
 - [version-compare 0.2.1 (MIT)](#version-compare-021-mit)
 - [vswhom 0.1.0 (MIT)](#vswhom-010-mit)
@@ -546,13 +546,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [walkdir 2.5.0 (Unlicense/MIT)](#walkdir-250-unlicensemit)
 - [want 0.3.1 (MIT)](#want-031-mit)
 - [wasi 0.11.1+wasi-snapshot-preview1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wasi-0111wasi-snapshot-preview1-apache-20-with-llvm-exception-or-apache-20-or-mit)
-- [wasip2 1.0.3+wasi-0.2.9 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wasip2-103wasi-029-apache-20-with-llvm-exception-or-apache-20-or-mit)
+- [wasip2 1.0.4+wasi-0.2.12 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wasip2-104wasi-0212-apache-20-with-llvm-exception-or-apache-20-or-mit)
 - [wasip3 0.4.0+wasi-0.3.0-rc-2026-01-06 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wasip3-040wasi-030-rc-2026-01-06-apache-20-with-llvm-exception-or-apache-20-or-mit)
-- [wasm-bindgen 0.2.122 (MIT OR Apache-2.0)](#wasm-bindgen-02122-mit-or-apache-20)
-- [wasm-bindgen-futures 0.4.72 (MIT OR Apache-2.0)](#wasm-bindgen-futures-0472-mit-or-apache-20)
-- [wasm-bindgen-macro 0.2.122 (MIT OR Apache-2.0)](#wasm-bindgen-macro-02122-mit-or-apache-20)
-- [wasm-bindgen-macro-support 0.2.122 (MIT OR Apache-2.0)](#wasm-bindgen-macro-support-02122-mit-or-apache-20)
-- [wasm-bindgen-shared 0.2.122 (MIT OR Apache-2.0)](#wasm-bindgen-shared-02122-mit-or-apache-20)
+- [wasm-bindgen 0.2.125 (MIT OR Apache-2.0)](#wasm-bindgen-02125-mit-or-apache-20)
+- [wasm-bindgen-futures 0.4.75 (MIT OR Apache-2.0)](#wasm-bindgen-futures-0475-mit-or-apache-20)
+- [wasm-bindgen-macro 0.2.125 (MIT OR Apache-2.0)](#wasm-bindgen-macro-02125-mit-or-apache-20)
+- [wasm-bindgen-macro-support 0.2.125 (MIT OR Apache-2.0)](#wasm-bindgen-macro-support-02125-mit-or-apache-20)
+- [wasm-bindgen-shared 0.2.125 (MIT OR Apache-2.0)](#wasm-bindgen-shared-02125-mit-or-apache-20)
 - [wasm-encoder 0.244.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wasm-encoder-02440-apache-20-with-llvm-exception-or-apache-20-or-mit)
 - [wasm-metadata 0.244.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wasm-metadata-02440-apache-20-with-llvm-exception-or-apache-20-or-mit)
 - [wasm-streams 0.5.0 (MIT OR Apache-2.0)](#wasm-streams-050-mit-or-apache-20)
@@ -564,7 +564,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [wayland-scanner 0.31.10 (MIT)](#wayland-scanner-03110-mit)
 - [wayland-sys 0.31.11 (MIT)](#wayland-sys-03111-mit)
 - [web_atoms 0.2.4 (MIT OR Apache-2.0)](#web_atoms-024-mit-or-apache-20)
-- [web-sys 0.3.99 (MIT OR Apache-2.0)](#web-sys-0399-mit-or-apache-20)
+- [web-sys 0.3.102 (MIT OR Apache-2.0)](#web-sys-03102-mit-or-apache-20)
 - [webkit2gtk 2.0.2 (MIT)](#webkit2gtk-202-mit)
 - [webkit2gtk-sys 2.0.2 (MIT)](#webkit2gtk-sys-202-mit)
 - [webview2-com 0.38.2 (MIT)](#webview2-com-0382-mit)
@@ -640,13 +640,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [x11-dl 2.21.0 (MIT)](#x11-dl-2210-mit)
 - [x11rb 0.13.2 (MIT OR Apache-2.0)](#x11rb-0132-mit-or-apache-20)
 - [x11rb-protocol 0.13.2 (MIT OR Apache-2.0)](#x11rb-protocol-0132-mit-or-apache-20)
-- [yoke 0.8.2 (Unicode-3.0)](#yoke-082-unicode-30)
+- [yoke 0.8.3 (Unicode-3.0)](#yoke-083-unicode-30)
 - [yoke-derive 0.8.2 (Unicode-3.0)](#yoke-derive-082-unicode-30)
 - [zbus 5.16.0 (MIT)](#zbus-5160-mit)
 - [zbus_macros 5.16.0 (MIT)](#zbus_macros-5160-mit)
 - [zbus_names 4.3.2 (MIT)](#zbus_names-432-mit)
-- [zerocopy 0.8.50 (BSD-2-Clause OR Apache-2.0 OR MIT)](#zerocopy-0850-bsd-2-clause-or-apache-20-or-mit)
-- [zerocopy-derive 0.8.50 (BSD-2-Clause OR Apache-2.0 OR MIT)](#zerocopy-derive-0850-bsd-2-clause-or-apache-20-or-mit)
+- [zerocopy 0.8.52 (BSD-2-Clause OR Apache-2.0 OR MIT)](#zerocopy-0852-bsd-2-clause-or-apache-20-or-mit)
+- [zerocopy-derive 0.8.52 (BSD-2-Clause OR Apache-2.0 OR MIT)](#zerocopy-derive-0852-bsd-2-clause-or-apache-20-or-mit)
 - [zerofrom 0.1.8 (Unicode-3.0)](#zerofrom-018-unicode-30)
 - [zerofrom-derive 0.1.7 (Unicode-3.0)](#zerofrom-derive-017-unicode-30)
 - [zerotrie 0.2.4 (Unicode-3.0)](#zerotrie-024-unicode-30)
@@ -662,23 +662,23 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 ### JavaScript Dependencies
 
 - [@bufbuild/protobuf 2.12.0 ((Apache-2.0 AND BSD-3-Clause))](#bufbuildprotobuf-2120-apache-20-and-bsd-3-clause)
-- [@connectrpc/connect 2.1.1 (Apache-2.0)](#connectrpcconnect-211-apache-20)
-- [@connectrpc/connect-web 2.1.1 (Apache-2.0)](#connectrpcconnect-web-211-apache-20)
+- [@connectrpc/connect 2.1.2 (Apache-2.0)](#connectrpcconnect-212-apache-20)
+- [@connectrpc/connect-web 2.1.2 (Apache-2.0)](#connectrpcconnect-web-212-apache-20)
 - [@knadh/oat 0.6.1 (MIT)](#knadhoat-061-mit)
-- [@milkdown/core 7.21.1 (MIT)](#milkdowncore-7211-mit)
-- [@milkdown/ctx 7.21.1 (MIT)](#milkdownctx-7211-mit)
-- [@milkdown/plugin-clipboard 7.21.1 (MIT)](#milkdownplugin-clipboard-7211-mit)
-- [@milkdown/plugin-highlight 7.21.1 (MIT)](#milkdownplugin-highlight-7211-mit)
-- [@milkdown/plugin-history 7.21.1 (MIT)](#milkdownplugin-history-7211-mit)
-- [@milkdown/plugin-listener 7.21.1 (MIT)](#milkdownplugin-listener-7211-mit)
-- [@milkdown/preset-gfm 7.21.1 (MIT)](#milkdownpreset-gfm-7211-mit)
-- [@milkdown/prose 7.21.1 (MIT)](#milkdownprose-7211-mit)
-- [@milkdown/utils 7.21.1 (MIT)](#milkdownutils-7211-mit)
+- [@milkdown/core 7.21.2 (MIT)](#milkdowncore-7212-mit)
+- [@milkdown/ctx 7.21.2 (MIT)](#milkdownctx-7212-mit)
+- [@milkdown/plugin-clipboard 7.21.2 (MIT)](#milkdownplugin-clipboard-7212-mit)
+- [@milkdown/plugin-highlight 7.21.2 (MIT)](#milkdownplugin-highlight-7212-mit)
+- [@milkdown/plugin-history 7.21.2 (MIT)](#milkdownplugin-history-7212-mit)
+- [@milkdown/plugin-listener 7.21.2 (MIT)](#milkdownplugin-listener-7212-mit)
+- [@milkdown/preset-gfm 7.21.2 (MIT)](#milkdownpreset-gfm-7212-mit)
+- [@milkdown/prose 7.21.2 (MIT)](#milkdownprose-7212-mit)
+- [@milkdown/utils 7.21.2 (MIT)](#milkdownutils-7212-mit)
 - [@noble/ciphers 2.2.0 (MIT)](#nobleciphers-220-mit)
 - [@noble/curves 2.2.0 (MIT)](#noblecurves-220-mit)
 - [@noble/hashes 2.2.0 (MIT)](#noblehashes-220-mit)
 - [@noble/post-quantum 0.6.1 (MIT)](#noblepost-quantum-061-mit)
-- [@shikijs/rehype 4.1.0 (MIT)](#shikijsrehype-410-mit)
+- [@shikijs/rehype 4.2.0 (MIT)](#shikijsrehype-420-mit)
 - [@solidjs/router 0.16.1 (MIT)](#solidjsrouter-0161-mit)
 - [@solidjs/start 1.3.2 (MIT)](#solidjsstart-132-mit)
 - [@tauri-apps/api 2.11.0 (Apache-2.0 OR MIT)](#tauri-appsapi-2110-apache-20-or-mit)
@@ -694,13 +694,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [diff 9.0.0 (BSD-3-Clause)](#diff-900-bsd-3-clause)
 - [fracturedjsonjs 5.0.1 (MIT)](#fracturedjsonjs-501-mit)
 - [fzstd 0.1.1 (MIT)](#fzstd-011-mit)
-- [lucide-solid 1.17.0 (ISC)](#lucide-solid-1170-isc)
+- [lucide-solid 1.18.0 (ISC)](#lucide-solid-1180-isc)
 - [random-word-slugs 0.1.7 (MIT)](#random-word-slugs-017-mit)
 - [rehype-stringify 10.0.1 (MIT)](#rehype-stringify-1001-mit)
 - [remark-gfm 4.0.1 (MIT)](#remark-gfm-401-mit)
 - [remark-parse 11.0.0 (MIT)](#remark-parse-1100-mit)
 - [remark-rehype 11.1.2 (MIT)](#remark-rehype-1112-mit)
-- [shiki 4.1.0 (MIT)](#shiki-410-mit)
+- [shiki 4.2.0 (MIT)](#shiki-420-mit)
 - [solid-js 1.9.13 (MIT)](#solid-js-1913-mit)
 - [source-map-js 1.2.1 (BSD-3-Clause)](#source-map-js-121-bsd-3-clause)
 - [tinykeys 4.0.0 (MIT)](#tinykeys-400-mit)
@@ -1118,7 +1118,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/cenkalti/backoff/v5 v5.0.3
+### github.com/cenkalti/backoff/v6 v6.0.1
 
 ```
 The MIT License (MIT)
@@ -1232,7 +1232,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/coder/websocket v1.8.14
+### github.com/coder/websocket v1.8.15
 
 ```
 Copyright (c) 2025 Coder
@@ -4409,7 +4409,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/jackc/pgx/v5 v5.9.2
+### github.com/jackc/pgx/v5 v5.10.0
 
 ```
 Copyright (c) 2013-2021 Jack Christensen
@@ -8125,7 +8125,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/prometheus/common v0.68.0
+### github.com/prometheus/common v0.68.1
 
 ```
                                  Apache License
@@ -10471,7 +10471,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### golang.org/x/crypto v0.52.0
+### golang.org/x/crypto v0.53.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10503,7 +10503,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/net v0.55.0
+### golang.org/x/net v0.56.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10567,7 +10567,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sync v0.20.0
+### golang.org/x/sync v0.21.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10599,7 +10599,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sys v0.45.0
+### golang.org/x/sys v0.46.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10631,7 +10631,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/term v0.43.0
+### golang.org/x/term v0.44.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10663,7 +10663,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/text v0.37.0
+### golang.org/x/text v0.38.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10987,7 +10987,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### modernc.org/libc v1.72.5
+### modernc.org/libc v1.73.4
 
 ```
 Copyright (c) 2017 The Libc Authors. All rights reserved.
@@ -11083,7 +11083,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/sqlite v1.51.0
+### modernc.org/sqlite v1.52.0
 
 ```
 Copyright (c) 2017 The Sqlite Authors. All rights reserved.
@@ -11441,7 +11441,7 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### alloc-stdlib 0.2.2 (BSD-3-Clause)
+### alloc-stdlib 0.2.4 (BSD-3-Clause)
 
 ```
 Copyright 2019 The Fuchsia Authors.
@@ -15925,7 +15925,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### bitflags 2.11.1 (MIT OR Apache-2.0)
+### bitflags 2.13.0 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -16393,7 +16393,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### block-buffer 0.12.0 (MIT OR Apache-2.0)
+### block-buffer 0.12.1 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -16887,7 +16887,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### brotli 8.0.3 (BSD-3-Clause AND MIT)
+### brotli 8.0.4 (BSD-3-Clause AND MIT)
 
 ```
 Copyright (c) 2016 Dropbox, Inc.
@@ -16926,7 +16926,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### brotli-decompressor 5.0.1 (BSD-3-Clause/MIT)
+### brotli-decompressor 5.0.3 (BSD-3-Clause/MIT)
 
 ```
 Copyright (c) 2016 Dropbox, Inc.
@@ -18383,7 +18383,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### cc 1.2.63 (MIT OR Apache-2.0)
+### cc 1.2.64 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -19318,7 +19318,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### chrono 0.4.44 (MIT OR Apache-2.0)
+### chrono 0.4.45 (MIT OR Apache-2.0)
 
 ```
 Rust-chrono is dual-licensed under The MIT License [1] and
@@ -38742,7 +38742,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### http 1.4.1 (MIT OR Apache-2.0)
+### http 1.4.2 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -43481,7 +43481,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### js-sys 0.3.99 (MIT OR Apache-2.0)
+### js-sys 0.3.102 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -46291,7 +46291,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### log 0.4.30 (MIT OR Apache-2.0)
+### log 0.4.32 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -46759,7 +46759,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### memchr 2.8.1 (Unlicense OR MIT)
+### memchr 2.8.2 (Unlicense OR MIT)
 
 ```
 This project is dual-licensed under the Unlicense and MIT licenses.
@@ -58375,7 +58375,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### prost 0.14.3 (Apache-2.0)
+### prost 0.14.4 (Apache-2.0)
 
 ```
                               Apache License
@@ -58581,7 +58581,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### prost-build 0.14.3 (Apache-2.0)
+### prost-build 0.14.4 (Apache-2.0)
 
 ```
                               Apache License
@@ -58787,7 +58787,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### prost-derive 0.14.3 (Apache-2.0)
+### prost-derive 0.14.4 (Apache-2.0)
 
 ```
                               Apache License
@@ -58993,7 +58993,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### prost-types 0.14.3 (Apache-2.0)
+### prost-types 0.14.4 (Apache-2.0)
 
 ```
                               Apache License
@@ -60997,7 +60997,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### regex 1.12.3 (MIT OR Apache-2.0)
+### regex 1.12.4 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -61465,7 +61465,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### regex-syntax 0.8.10 (MIT OR Apache-2.0)
+### regex-syntax 0.8.11 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -65734,7 +65734,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### serde_with 3.20.0 (MIT OR Apache-2.0)
+### serde_with 3.21.0 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -65968,7 +65968,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### serde_with_macros 3.20.0 (MIT OR Apache-2.0)
+### serde_with_macros 3.21.0 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -67918,7 +67918,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### smallvec 1.15.1 (MIT OR Apache-2.0)
+### smallvec 1.15.2 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -69856,7 +69856,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### syn 2.0.117 (MIT OR Apache-2.0)
+### syn 2.0.118 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -75282,7 +75282,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### time 0.3.47 (MIT OR Apache-2.0)
+### time 0.3.49 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -75485,7 +75485,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### time-core 0.1.8 (MIT OR Apache-2.0)
+### time-core 0.1.9 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -75688,7 +75688,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### time-macros 0.2.27 (MIT OR Apache-2.0)
+### time-macros 0.2.29 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -81279,7 +81279,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### unicode-segmentation 1.13.2 (MIT OR Apache-2.0)
+### unicode-segmentation 1.13.3 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -82448,7 +82448,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### uuid 1.23.2 (Apache-2.0 OR MIT)
+### uuid 1.23.3 (Apache-2.0 OR MIT)
 
 ```
                               Apache License
@@ -83523,7 +83523,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### wasip2 1.0.3+wasi-0.2.9 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)
+### wasip2 1.0.4+wasi-0.2.12 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)
 
 ```
                               Apache License
@@ -84404,7 +84404,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### wasm-bindgen 0.2.122 (MIT OR Apache-2.0)
+### wasm-bindgen 0.2.125 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -84638,7 +84638,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### wasm-bindgen-futures 0.4.72 (MIT OR Apache-2.0)
+### wasm-bindgen-futures 0.4.75 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -84872,7 +84872,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### wasm-bindgen-macro 0.2.122 (MIT OR Apache-2.0)
+### wasm-bindgen-macro 0.2.125 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -85106,7 +85106,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### wasm-bindgen-macro-support 0.2.122 (MIT OR Apache-2.0)
+### wasm-bindgen-macro-support 0.2.125 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -85340,7 +85340,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### wasm-bindgen-shared 0.2.122 (MIT OR Apache-2.0)
+### wasm-bindgen-shared 0.2.125 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -87443,7 +87443,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### web-sys 0.3.99 (MIT OR Apache-2.0)
+### web-sys 0.3.102 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -103848,7 +103848,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### yoke 0.8.2 (Unicode-3.0)
+### yoke 0.8.3 (Unicode-3.0)
 
 ```
 UNICODE LICENSE V3
@@ -104040,7 +104040,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### zerocopy 0.8.50 (BSD-2-Clause OR Apache-2.0 OR MIT)
+### zerocopy 0.8.52 (BSD-2-Clause OR Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -104301,7 +104301,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### zerocopy-derive 0.8.50 (BSD-2-Clause OR Apache-2.0 OR MIT)
+### zerocopy-derive 0.8.52 (BSD-2-Clause OR Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -105647,7 +105647,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### @connectrpc/connect 2.1.1 (Apache-2.0)
+### @connectrpc/connect 2.1.2 (Apache-2.0)
 
 ```
                                  Apache License
@@ -105853,7 +105853,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### @connectrpc/connect-web 2.1.1 (Apache-2.0)
+### @connectrpc/connect-web 2.1.2 (Apache-2.0)
 
 ```
                                  Apache License
@@ -106085,7 +106085,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @milkdown/core 7.21.1 (MIT)
+### @milkdown/core 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106111,7 +106111,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/ctx 7.21.1 (MIT)
+### @milkdown/ctx 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106137,7 +106137,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-clipboard 7.21.1 (MIT)
+### @milkdown/plugin-clipboard 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106163,7 +106163,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-highlight 7.21.1 (MIT)
+### @milkdown/plugin-highlight 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106189,7 +106189,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-history 7.21.1 (MIT)
+### @milkdown/plugin-history 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106215,7 +106215,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-listener 7.21.1 (MIT)
+### @milkdown/plugin-listener 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106241,7 +106241,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/preset-gfm 7.21.1 (MIT)
+### @milkdown/preset-gfm 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106267,7 +106267,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/prose 7.21.1 (MIT)
+### @milkdown/prose 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106293,7 +106293,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/utils 7.21.1 (MIT)
+### @milkdown/utils 7.21.2 (MIT)
 
 ```
 The MIT License (MIT)
@@ -106424,7 +106424,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @shikijs/rehype 4.1.0 (MIT)
+### @shikijs/rehype 4.2.0 (MIT)
 
 ```
 MIT License
@@ -106997,7 +106997,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### lucide-solid 1.17.0 (ISC)
+### lucide-solid 1.18.0 (ISC)
 
 ```
 ISC License
@@ -107177,7 +107177,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### shiki 4.1.0 (MIT)
+### shiki 4.2.0 (MIT)
 
 ```
 MIT License

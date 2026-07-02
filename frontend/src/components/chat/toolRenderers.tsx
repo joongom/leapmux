@@ -3,7 +3,9 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
 import type { CommandResultSource } from './results/commandResult'
 import type { FileEditDiffSource } from './results/fileEditDiff'
+import type { TokenGate } from './useAsyncCodeTokens'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { CachedToken } from '~/lib/tokenCache'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
@@ -14,19 +16,20 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
-import { createMemo, Show } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
+import { Alert } from '~/components/common/Alert'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
-import { escapeHtml } from '~/lib/renderAnsi'
-import { shikiHighlighter } from '~/lib/renderMarkdown'
+import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { inlineFlex } from '~/styles/shared.css'
-import { getToolResultExpanded } from './messageRenderers'
+import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from './messageRenderers'
 import { RelativeTime } from './RelativeTime'
+import { canHighlightBySize, COLLAPSED_RESULT_ROWS } from './results/collapse'
 import { CollapsibleContent } from './results/CollapsibleContent'
 import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
-import { parseCatNContent, ReadResultView } from './results/ReadResultView'
+import { parseReadContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
 import {
   controlResponseTag,
@@ -42,6 +45,7 @@ import {
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
+import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 import { spanColorKey } from './widgets/SpanLines'
 import { spanLineColors } from './widgets/SpanLines.css'
 
@@ -72,9 +76,9 @@ export function EmptyTodoLayout(props: { toolName: string, context?: RenderConte
  *
  *  1. `title` — the header line, always visible. Identifies what the tool
  *     ran on (file path, command description, search pattern).
- *  2. `summary` — second line, also always visible when present. A brief
- *     preview that supplements the title (Bash command first line, Grep
- *     search path, etc.).
+ *  2. `summary` — content below the title, also always visible when present. A
+ *     preview that supplements the title (Bash command preview, Grep search
+ *     path, etc.).
  *  3. `children` — "the details": the full expanded body. Hidden by default
  *     until the user clicks the expand toggle, OR shown unconditionally when
  *     `alwaysVisible` is set (e.g. TodoList where the list IS the content).
@@ -123,7 +127,8 @@ export function ToolUseLayout(props: {
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
   const actions = () => props.headerActions
-  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply
+  const hasActions = () =>
+    !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply
   return (
     <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
@@ -316,46 +321,142 @@ export function ToolHeaderActions(props: {
   )
 }
 
-export function renderBashHighlight(code: string): string {
-  try {
-    return shikiHighlighter.codeToHtml(code, {
-      lang: 'bash',
-      themes: { light: 'github-light', dark: 'github-dark' },
-      defaultColor: false,
-    })
-  }
-  catch {
-    return `<pre><code>${escapeHtml(code)}</code></pre>`
+/** Map a chat RenderContext to the shared token hook's premeasure/hold gate. */
+function tokenGateFromContext(context: RenderContext | undefined): TokenGate {
+  return {
+    premeasure: context?.premeasureMode === true,
+    hold: context?.syntaxHighlightingPaused?.() === true || context?.textSelectionActive?.() === true,
   }
 }
 
-export function renderJsonHighlight(code: string): string {
-  try {
-    return shikiHighlighter.codeToHtml(code, {
-      lang: 'json',
-      themes: { light: 'github-light', dark: 'github-dark' },
-      defaultColor: false,
-    })
-  }
-  catch {
-    return `<pre><code>${escapeHtml(code)}</code></pre>`
-  }
+function TokenizedCode(props: {
+  code: string
+  tokens?: CachedToken[][] | null
+  class?: string
+  dataCommandInputCollapsed?: boolean
+  dataCommandInputOverflowing?: boolean
+  elementRef?: (el: HTMLDivElement) => void
+}): JSX.Element {
+  return (
+    <div
+      ref={el => props.elementRef?.(el)}
+      class={props.class}
+      data-command-input-collapsed={props.dataCommandInputCollapsed ? '' : undefined}
+      data-command-input-overflowing={props.dataCommandInputOverflowing ? '' : undefined}
+    >
+      <Show when={props.tokens} fallback={props.code}>
+        {lines => (
+          <For each={lines()}>
+            {(line, index) => (
+              <>
+                <For each={line}>
+                  {token => (
+                    <span data-shiki-token style={token.htmlStyle as JSX.CSSProperties}>
+                      {token.content}
+                    </span>
+                  )}
+                </For>
+                <Show when={index() < lines().length - 1}>{'\n'}</Show>
+              </>
+            )}
+          </For>
+        )}
+      </Show>
+    </div>
+  )
 }
 
-/** Number of lines/items shown when a tool result is collapsed (last row fades out). */
-export const COLLAPSED_RESULT_ROWS = 3
+/**
+ * A code body highlighted as token <span>s via the async Oniguruma token worker
+ * (replacing the old synchronous `codeToHtml` + innerHTML path). While tokens are
+ * in flight / paused / oversized, `TokenizedCode` shows the raw text, so there is
+ * no flash of nothing. The only per-surface difference is the Shiki `lang`; the
+ * eligibility, gate, and token markup are identical, so Bash and JSON are thin
+ * wrappers that bind `lang` rather than two copies that must stay in sync.
+ */
+function AsyncHighlightedCode(props: {
+  lang: string
+  code: string
+  context?: RenderContext
+  class?: string
+  maxHighlightChars?: number
+  maxHighlightLines?: number
+  dataCommandInputCollapsed?: boolean
+  dataCommandInputOverflowing?: boolean
+  elementRef?: (el: HTMLDivElement) => void
+}): JSX.Element {
+  // Memoized so the per-surface char/line scan runs once per code change, not on
+  // every currentKey() read inside the hook (2-3x per reactive pass). Mirrors
+  // useDiffTokens, which memoizes its eligibility for the same reason.
+  const eligible = createMemo(() => canHighlightBySize(props.code, { maxChars: props.maxHighlightChars, maxLines: props.maxHighlightLines }))
+  const tokens = useAsyncCodeTokens({
+    lang: () => props.lang,
+    code: () => props.code,
+    eligible,
+    gate: () => tokenGateFromContext(props.context),
+  })
+  return (
+    <TokenizedCode
+      class={props.class}
+      code={props.code}
+      dataCommandInputCollapsed={props.dataCommandInputCollapsed}
+      dataCommandInputOverflowing={props.dataCommandInputOverflowing}
+      elementRef={props.elementRef}
+      tokens={tokens()}
+    />
+  )
+}
+
+export function BashHighlightHtml(props: {
+  code: string
+  context?: RenderContext
+  class?: string
+  maxHighlightChars?: number
+  maxHighlightLines?: number
+  dataCommandInputCollapsed?: boolean
+  dataCommandInputOverflowing?: boolean
+  elementRef?: (el: HTMLDivElement) => void
+}): JSX.Element {
+  return (
+    <AsyncHighlightedCode
+      lang="bash"
+      code={props.code}
+      context={props.context}
+      class={props.class}
+      maxHighlightChars={props.maxHighlightChars}
+      maxHighlightLines={props.maxHighlightLines}
+      dataCommandInputCollapsed={props.dataCommandInputCollapsed}
+      dataCommandInputOverflowing={props.dataCommandInputOverflowing}
+      elementRef={props.elementRef}
+    />
+  )
+}
+
+export function JsonHighlightHtml(props: {
+  code: string
+  context?: RenderContext
+  class?: string
+  maxHighlightChars?: number
+  maxHighlightLines?: number
+}): JSX.Element {
+  return (
+    <AsyncHighlightedCode
+      lang="json"
+      code={props.code}
+      context={props.context}
+      class={props.class}
+      maxHighlightChars={props.maxHighlightChars}
+      maxHighlightLines={props.maxHighlightLines}
+    />
+  )
+}
 
 const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
-const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
 
 /** Extract error text from <tool_use_error> tags in tool result content. */
 function extractToolUseError(content: string): string | null {
   const match = content.match(TOOL_USE_ERROR_RE)
   return match ? match[1].trim() : null
-}
-
-export function stripLeadingBlankLines(content: string): string {
-  return content.replace(LEADING_BLANK_LINES_RE, '')
 }
 
 /**
@@ -381,16 +482,30 @@ function renderReadOrPre(
   resultContent: string,
   readFilePath?: string,
   collapsed?: boolean,
+  context?: RenderContext,
 ): JSX.Element {
-  const parsed = parseCatNContent(resultContent)
-  if (parsed) {
-    const displayLines = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
-      ? parsed.slice(0, COLLAPSED_RESULT_ROWS)
-      : parsed
-    const isCollapsed = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+  const { leading, lines, trailing } = parseReadContent(resultContent)
+  if (lines) {
+    const isCollapsed = !!collapsed && lines.length > COLLAPSED_RESULT_ROWS
+    const displayLines = isCollapsed ? lines.slice(0, COLLAPSED_RESULT_ROWS) : lines
+    const pauseSyntax = shouldPauseSyntaxHighlighting(context)
+    // Reminder/tag alerts render only when expanded (mirroring ReadFileResultBody),
+    // so a collapsed body keeps the body-only height the off-screen estimator assumes.
     return (
       <div class={isCollapsed ? toolResultCollapsed : undefined}>
-        <ReadResultView lines={displayLines} filePath={readFilePath} />
+        <Show when={!collapsed}>
+          <For each={leading}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>
+        </Show>
+        <ReadResultView
+          lines={displayLines}
+          filePath={readFilePath}
+          premeasureMode={context?.premeasureMode}
+          syntaxHighlightingPaused={pauseSyntax}
+          textSelectionActive={context?.textSelectionActive}
+        />
+        <Show when={!collapsed}>
+          <For each={trailing}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>
+        </Show>
       </div>
     )
   }
@@ -465,18 +580,19 @@ export function ToolResultMessage(props: {
             when={renderableDiff()}
             fallback={
               props.displayKind === 'read'
-                ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded())
+                ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded(), props.context)
                 : (
                     <CollapsibleContent
                       kind={props.displayKind === 'markdown' ? 'markdown-tool-result' : 'ansi-or-pre'}
                       text={normalizedResultContent()}
                       display={displayContent()}
                       isCollapsed={isCollapsed()}
+                      context={props.context}
                     />
                   )
             }
           >
-            {src => <FileEditDiffBody source={src()} view={diffView()} />}
+            {src => <FileEditDiffBody source={src()} view={diffView()} context={props.context} />}
           </Show>
         </Show>
       </div>

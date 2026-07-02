@@ -1,6 +1,8 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
-import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.css'
+import { codeTypography, codeWrap } from '~/styles/codeBlock'
+import { shikiDualThemeColors } from './shikiTokenColors.css'
+import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.geometry'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -33,13 +35,9 @@ export const toolResultContent = style({
 
 // Tool result content as preformatted text (for Bash, Grep, Read output)
 export const toolResultContentPre = style({
+  ...codeTypography,
+  ...codeWrap,
   color: 'var(--foreground)',
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
 })
 
 export const commandStreamContainer = style({
@@ -64,9 +62,16 @@ export const toolResultError = style({
 
 // Tool result content with ANSI escape sequence rendering (for Bash output)
 export const toolResultContentAnsi = style({
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-  fontSize: 'var(--text-8)',
+  ...codeTypography,
+  ...codeWrap,
+  // Base color for un-tokenized text nodes -- the raw-text fallback shown while the
+  // async token worker is in flight / paused / over the size cap (TokenizedCode's
+  // `fallback={props.code}`), and the JSON tool-result body before tokens land.
+  // Without this the fallback inherits the browser-default black, which is
+  // near-invisible on the dark theme. Shiki token spans (`span[data-shiki-token]` /
+  // `pre.shiki span`) set their own color via higher-specificity globals and still
+  // override this. Matches toolResultContentPre, which the JSON null state used before.
+  color: 'var(--foreground)',
 })
 
 // Override Shiki's default <pre> styling inside ANSI tool result
@@ -91,16 +96,10 @@ globalStyle(`${toolResultContentAnsi} pre.shiki code`, {
   fontFamily: 'inherit',
 })
 
-// Shiki dual-theme support for ANSI-rendered spans
-globalStyle(`${toolResultContentAnsi} pre.shiki span`, {
-  color: 'var(--shiki-light)',
-  backgroundColor: 'var(--shiki-light-bg, transparent)',
-})
-
-globalStyle(`html[data-theme="dark"] ${toolResultContentAnsi} pre.shiki span`, {
-  color: 'var(--shiki-dark)',
-  backgroundColor: 'var(--shiki-dark-bg, transparent)',
-})
+// Shiki dual-theme support for ANSI-rendered spans, and for JSON tool results that
+// render as token <span>s (data-shiki-token) in this same wrapper.
+shikiDualThemeColors(`${toolResultContentAnsi} pre.shiki span`, { bg: true })
+shikiDualThemeColors(`${toolResultContentAnsi} span[data-shiki-token]`, { bg: true })
 
 // Collapsed tool results: max 3rem height with fade-out gradient
 export const toolResultCollapsed = style({
@@ -122,18 +121,27 @@ export const toolResultPrompt = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Tool summary line (monospace)
-const toolInputSummaryBase = {
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none' as const,
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-}
-
+// Tool summary line (monospace). Same code typography as the expanded body
+// (toolResultContentAnsi) so the SAME command keeps its size + line height when toggled
+// between the collapsed summary and the expanded body.
 export const toolInputSummary = style({
-  ...toolInputSummaryBase,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
+  ...codeTypography,
+  ...codeWrap,
+  color: 'var(--muted-foreground)',
+})
+
+// Collapsed command input summaries show the first three visual rows. This is
+// intentionally a visual row cap (not hard-line truncation) so a very long
+// single-line command is clipped correctly after wrapping. 4.5em == 3 rows at the
+// 1.5 line height above (kept in sync with it).
+export const commandInputCollapsed = style({
+  maxHeight: '4.5em',
+  overflow: 'hidden',
+})
+
+export const commandInputCollapsedFade = style({
+  WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+  maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
 })
 
 // Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
@@ -158,15 +166,8 @@ globalStyle(`${toolInputSummary} pre.shiki code`, {
   fontFamily: 'inherit',
 })
 
-globalStyle(`${toolInputSummary} pre.shiki span`, {
-  color: 'var(--shiki-light)',
-  backgroundColor: 'var(--shiki-light-bg, transparent)',
-})
-
-globalStyle(`html[data-theme="dark"] ${toolInputSummary} pre.shiki span`, {
-  color: 'var(--shiki-dark)',
-  backgroundColor: 'var(--shiki-dark-bg, transparent)',
-})
+shikiDualThemeColors(`${toolInputSummary} pre.shiki span`, { bg: true })
+shikiDualThemeColors(`${toolInputSummary} span[data-shiki-token]`, { bg: true })
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
 export const toolInputText = style({
@@ -203,7 +204,7 @@ export const toolHeaderActions = style({
   'gap': '2px',
   'flexShrink': 0,
   'opacity': 0,
-  'transition': 'opacity 0.15s ease',
+  'transition': 'opacity var(--transition)',
   '@media': {
     '(prefers-reduced-motion: reduce)': {
       transition: 'none',
